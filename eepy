@@ -17,6 +17,10 @@ CAP=3600              # seconds of session inactivity before it stops counting
 HEARTBEAT_MAX=90      # seconds before the watchdog distrusts the heartbeat
 HOPS=20               # process-tree hops when looking for the Claude process
 
+# ---- Claude Code facts (from the pre-flight probe) ----
+CLAUDE_NAME=claude                # comm of the Claude Code process
+RUNNING_STATUSES="running pending"  # background_tasks statuses that count as still running
+
 # ---- Paths ----
 EEPY_HOME=${EEPY_HOME:-$HOME/.eepy}
 EEPY_LOG=${EEPY_LOG:-$HOME/Library/Logs/eepy.log}
@@ -142,6 +146,86 @@ parse_duration() {
   print -r -- $secs
 }
 
+# hook_next <json> <current>: prints "<state> <touch>" per the spec's Session tracking table.
+hook_next() {
+  local f ev tool nt run cron both
+  f=$(print -r -- $1 | jq -r --arg st "$RUNNING_STATUSES" '
+    ($st | split(" ")) as $L
+    | [ (.hook_event_name // ""), (.tool_name // ""), (.notification_type // ""),
+        ([(.background_tasks | arrays | .[] | select(.status | IN($L[])))] | length),
+        ((.session_crons | arrays | length) // 0),
+        ((.background_tasks | type) == "array" and (.session_crons | type) == "array") ]
+    | map(tostring) | join("|")' 2>/dev/null) || { print "keep 0"; return 0 }
+  IFS='|' read -r ev tool nt run cron both <<< $f
+  case $ev in
+    UserPromptSubmit|PostToolUse) print "working 1" ;;
+    PreToolUse) [[ $tool == (AskUserQuestion|ExitPlanMode) ]] && print "finished 0" || print "keep 0" ;;
+    Stop)
+      if [[ $both == true ]] && (( run > 0 || cron > 0 )); then print "waiting 1"
+      else print "finished 0"; fi ;;
+    StopFailure) print "finished 0" ;;
+    Notification)
+      case $nt in
+        permission_prompt|elicitation_dialog) print "finished 0" ;;
+        idle_prompt) [[ $2 == working ]] && print "finished 0" || print "keep 0" ;;
+        *) print "keep 0" ;;
+      esac ;;
+    SessionEnd) print "rm 0" ;;
+    *) print "keep 0" ;;
+  esac
+}
+
+# Prints the first pid at or above $1 in the process tree whose comm is CLAUDE_NAME, or nothing.
+claude_pid() {
+  local pid=$1 comm i
+  for (( i = 0; i < HOPS; i++ )); do
+    [[ $pid == <-> ]] && (( pid > 1 )) || return 0
+    comm=$(ps -o comm= -p $pid 2>/dev/null) || return 0
+    [[ ${comm:t} == $CLAUDE_NAME ]] && { print -r -- $pid; return 0 }
+    pid=$(ps -o ppid= -p $pid 2>/dev/null) || return 0
+    pid=${pid// /}
+  done
+  return 0
+}
+
+hook_run() {
+  local json=$(cat) f id id8 ev both next state touch old act old_pid old_start pid start tmp
+  local -a L
+  f=$(print -r -- $json | jq -r '[(.session_id // ""), (.hook_event_name // ""),
+    ((.background_tasks | type) == "array" and (.session_crons | type) == "array")] | map(tostring) | join("|")') || return 0
+  IFS='|' read -r id ev both <<< $f
+  [[ $id =~ '^[A-Za-z0-9_-]+$' ]] || return 0
+  id8=${id[1,8]}
+  pid=$(claude_pid $PPID)
+  [[ -n $pid ]] || { log "hook $id8: no claude process found, ignored"; return 0 }
+  f=$EEPY_HOME/sessions/$id
+  old=""; act=""
+  if [[ -r $f ]]; then
+    L=("${(@f)$(<$f)}")
+    old=$L[1] act=$L[2]
+  fi
+  next=$(hook_next "$json" "$old"); state=${next% *} touch=${next#* }
+  [[ $ev == Stop && $both != true ]] && log "FAILURE hook $id8: Stop without task info"
+  if [[ $state == rm ]]; then
+    [[ -e $f ]] && { rm -f $f; log "hook $id8 $old -> removed ($ev)" }
+    return 0
+  fi
+  [[ $state == keep ]] && return 0
+  (( touch )) || [[ -z $act ]] && act=$(now)
+  start=$(proc_start $pid)
+  mkdir -p $EEPY_HOME/sessions || return 0
+  tmp=$EEPY_HOME/.tmp.$id.$$
+  print -r -- "$state"$'\n'"$act"$'\n'"$pid"$'\n'"$start" > $tmp && mv -f $tmp $f || { rm -f $tmp; return 0 }
+  [[ $state != $old ]] && log "hook $id8 ${old:-none} -> $state ($ev)"
+  return 0
+}
+
+# Never prints, never exits, always returns 0: Claude must not be affected by a bug here.
+hook() {
+  hook_run >/dev/null 2>&1
+  return 0
+}
+
 parse_args() {
   CMD=run LIMIT=0 NOCLAUDE=0
   FLOOR=$DEFAULT_FLOOR UNPLUG=$DEFAULT_UNPLUG LOWPOWER=$DEFAULT_LOWPOWER
@@ -167,7 +251,7 @@ main() {
   parse_args "$@" || exit 1
   local rc=0
   case $CMD in
-    hook) exit 0 ;;  # always 0, never prints
+    hook) hook ;;  # always 0, never prints
     *) print -u2 "eepy $CMD: not built yet"; rc=1 ;;
   esac
   exit $rc

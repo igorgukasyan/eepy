@@ -169,6 +169,52 @@ t_decide() {
   is "$(decide 0 1 0 0 0 1)" stop    uc11-time-limit
 }
 
+t_hook_next() {
+  local s='{"hook_event_name":"Stop","session_crons":[],"background_tasks":'
+  is "$(hook_next '{"hook_event_name":"UserPromptSubmit"}' finished)"                        "working 1"  prompt
+  is "$(hook_next '{"hook_event_name":"PostToolUse","tool_name":"Bash"}' finished)"          "working 1"  uc7-after-approval
+  is "$(hook_next '{"hook_event_name":"PostToolUse","tool_name":"Read","agent_id":"a"}' waiting)" "working 1" uc3-subagent-tool
+  is "$(hook_next '{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion"}' working)" "finished 0" uc6-question
+  is "$(hook_next '{"hook_event_name":"PreToolUse","tool_name":"ExitPlanMode"}' working)"    "finished 0" uc6-plan
+  is "$(hook_next '{"hook_event_name":"PreToolUse","tool_name":"Bash"}' working)"            "keep 0"     other-pretooluse
+  is "$(hook_next "$s"'[]}' working)"                                                        "finished 0" uc1-stop
+  is "$(hook_next "$s"'[{"id":"t","type":"shell","status":"running"}]}' working)"           "waiting 1"  uc3-stop-background
+  is "$(hook_next "$s"'[{"id":"t","type":"subagent","status":"running"}]}' working)"        "waiting 1"  uc3-stop-subagent
+  is "$(hook_next "$s"'[{"id":"t","type":"shell","status":"completed"}]}' working)"         "finished 0" stop-background-done
+  is "$(hook_next '{"hook_event_name":"Stop","background_tasks":[],"session_crons":[{"id":"c"}]}' working)" "waiting 1" uc3-stop-cron
+  is "$(hook_next '{"hook_event_name":"Stop"}' working)"                                     "finished 0" stop-no-task-info
+  is "$(hook_next '{"hook_event_name":"StopFailure"}' working)"                              "finished 0" uc32-api-error
+  is "$(hook_next '{"hook_event_name":"Notification","notification_type":"permission_prompt"}' working)"  "finished 0" uc6-permission
+  is "$(hook_next '{"hook_event_name":"Notification","notification_type":"elicitation_dialog"}' working)" "finished 0" uc6-form
+  is "$(hook_next '{"hook_event_name":"Notification","notification_type":"idle_prompt"}' working)"        "finished 0" uc30-esc
+  is "$(hook_next '{"hook_event_name":"Notification","notification_type":"idle_prompt"}' waiting)"        "keep 0"     idle-never-overwrites-waiting
+  is "$(hook_next '{"hook_event_name":"SessionEnd"}' working)"                               "rm 0"       uc33-end
+}
+t_claude_pid() {
+  PS_PPID=(4242 4100 4100 4000 4000 1); PS_COMM=(4242 /bin/zsh 4100 zsh 4000 claude)
+  is "$(claude_pid 4242)" 4000 walks-up-through-padded-ppids
+  is "$(claude_pid 4000)" 4000 direct-parent
+  PS_COMM=(4242 /bin/zsh 4100 zsh 4000 launchd)
+  is "$(claude_pid 4242)" "" uc35-stops-at-pid-1
+  PS_PPID=(5 6 6 5); PS_COMM=(5 zsh 6 zsh)
+  is "$(claude_pid 5)" "" cycle-capped
+}
+t_hook() {
+  claude_pid() { print 4000 }; PS_LSTART=(4000 'Tue Oct 20 13:33:01 2026    '); NOW=1000
+  local f=$EEPY_HOME/sessions/s1 out
+  out=$(print -r '{"hook_event_name":"UserPromptSubmit","session_id":"s1"}' | hook); is "$out" "" no-stdout
+  is "$(<$f)" $'working\n1000\n4000\nTue Oct 20 13:33:01 2026' state-written
+  NOW=2000; print -r '{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s1"}' | hook
+  is "$(head -2 $f)" $'finished\n1000' notification-keeps-activity
+  is "$(ls -A $EEPY_HOME/sessions)" s1 no-temp-files-in-sessions
+  print -r '{"hook_event_name":"SessionEnd","session_id":"s1"}' | hook; [[ -e $f ]] && is present removed session-end
+  print -r 'not json' | hook; is $? 0 garbage-returns-0
+  print -r '{"hook_event_name":"UserPromptSubmit"}' | hook; is "$(ls -A $EEPY_HOME/sessions)" "" no-session-id
+  claude_pid() { }; print -r '{"hook_event_name":"UserPromptSubmit","session_id":"s2"}' | hook
+  [[ -e $EEPY_HOME/sessions/s2 ]] && is written ignored uc35-no-claude
+  grep -q 'no claude process found' $EEPY_LOG || is missing logged no-claude-logged
+}
+
 # ---- runner ----
 # Abort before any group if the stubs cannot be loaded (never fall through to real sudo).
 ( export EEPY_HOME=$(mktemp -d) EEPY_LOG=/dev/null; load_eepy ) >/dev/null 2>&1
