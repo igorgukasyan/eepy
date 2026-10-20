@@ -215,6 +215,25 @@ t_hook() {
   grep -q 'no claude process found' $EEPY_LOG || is missing logged no-claude-logged
 }
 
+t_sessions() {
+  local d=$EEPY_HOME/sessions; mkdir -p $d
+  mk() { print -rl -- $2 $3 $4 "$5" > $d/$1 }
+  PS_LSTART=(4000 'L1    ' 4001 'L2 ')         # real ps output has trailing spaces
+  scan_sessions 1500; is $ACTIVE 0 empty
+  mk a working  1000 4000 L1      # active
+  mk b waiting  1000 4001 L2      # uc3 active
+  mk c finished 1000 4000 L1      # uc34 not active, kept
+  mk d working  1000 4999 L9      # uc29 dead process
+  mk e working  1000 4001 OTHER   # pid reused
+  print garbage > $d/f            # unparseable
+  scan_sessions 1500; is $ACTIVE 2 two-active
+  is "$(ls $d | tr '\n' ' ')" "a b c " dead-reused-garbage-deleted
+  is "$REPORT" "a working 500s, b waiting 500s, c finished 500s" report
+  scan_sessions 4599; is $ACTIVE 2 uc4-just-under-cap
+  scan_sessions 4600; is $ACTIVE 0 uc4-cap-reached
+  rm -rf $d; scan_sessions 1500; is "$ACTIVE" 0 missing-dir
+}
+
 # ---- runner ----
 # Abort before any group if the stubs cannot be loaded (never fall through to real sudo).
 ( export EEPY_HOME=$(mktemp -d) EEPY_LOG=/dev/null; load_eepy ) >/dev/null 2>&1

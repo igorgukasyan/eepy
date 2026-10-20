@@ -220,6 +220,25 @@ hook_run() {
   return 0
 }
 
+# scan_sessions <now>: sets ACTIVE (count) and REPORT ("<id8> <state> <age>s, ..."). Deletes unparseable and mismatched files.
+scan_sessions() {
+  local now=$1 f id st act pid start age
+  local -a L R
+  ACTIVE=0 REPORT=""
+  for f in $EEPY_HOME/sessions/*(N); do
+    L=("${(@f)$(<$f 2>/dev/null)}")
+    if (( $#L != 4 )) || [[ $L[1] != (working|waiting|finished) || $L[2] != <-> || $L[3] != <-> || -z $L[4] ]]; then
+      rm -f $f; continue
+    fi
+    st=$L[1] act=$L[2] pid=$L[3] start=$L[4]
+    [[ "$(proc_start $pid)" == "$start" ]] || { rm -f $f; continue }
+    age=$(( now - act ))
+    id=${f:t}; R+=("${id[1,8]} $st ${age}s")
+    [[ $st != finished ]] && (( age < CAP )) && (( ACTIVE++ ))
+  done
+  REPORT=${(j:, :)R}
+}
+
 # Never prints, never exits, always returns 0: Claude must not be affected by a bug here.
 hook() {
   hook_run >/dev/null 2>&1
