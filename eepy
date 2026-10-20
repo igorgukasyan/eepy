@@ -1,0 +1,95 @@
+#!/bin/zsh
+# eepy: keep a MacBook awake with the lid closed while Claude Code works, then sleep it safely.
+
+# ---- Defaults (owner-editable) ----
+DEFAULT_FLOOR=20      # battery floor, percent
+DEFAULT_UNPLUG=0      # 1 = treat "on battery" as a trigger
+DEFAULT_LOWPOWER=0    # 1 = treat Low Power Mode as a trigger
+GRACE=120             # seconds
+INTERVAL=30           # seconds between checks
+
+# ---- Safety constants: do not change ----
+THERMAL_MAX=2         # OS thermal pressure "serious" or worse
+TEMP_MAX=4000         # battery temperature, hundredths of a degree C
+CAP=3600              # seconds of session inactivity before it stops counting
+HEARTBEAT_MAX=90      # seconds before the watchdog distrusts the heartbeat
+HOPS=20               # process-tree hops when looking for the Claude process
+
+# ---- Paths ----
+EEPY_HOME=${EEPY_HOME:-$HOME/.eepy}
+EEPY_LOG=${EEPY_LOG:-$HOME/Library/Logs/eepy.log}
+
+usage() {
+  cat <<'USAGE'
+Commands:
+  eepy                  hold while any Claude session is active, until stopped
+  eepy 2h               same, for the next 2 hours only
+  eepy --no-claude      hold until stopped, ignoring Claude
+  eepy 2h --no-claude   hold for the next 2 hours, ignoring Claude
+  eepy --battery 10     battery floor 10% (default 20%)
+  eepy --unplug         also treat "on battery" as a trigger
+  eepy --low-power      also treat Low Power Mode as a trigger
+  eepy setup            one-time install
+  eepy uninstall        undo everything setup did
+  eepy hook             internal: called by Claude Code hooks
+  eepy watchdog         internal: called by the LaunchAgent every minute
+USAGE
+}
+
+now() { print -r -- $EPOCHSECONDS; }
+
+log() {
+  local line="$(date '+%F %T') $*"
+  mkdir -p ${EEPY_LOG:h}
+  print -r -- "$line" >> $EEPY_LOG
+  (( ${LOG_TTY:-0} == 1 )) && { print -r -- "$line" 2>/dev/null || true; }
+  return 0
+}
+
+# Prints the process start time with spaces squeezed and trimmed, or nothing.
+proc_start() {
+  local s
+  s=$(LC_ALL=C ps -o lstart= -p $1 2>/dev/null) || return 0
+  print -r -- ${(j: :)${=s}}
+}
+
+# Nh, Nm or NhMm with a total above 0: prints seconds.
+parse_duration() {
+  [[ $1 =~ '^(([0-9]+)h)?(([0-9]+)m)?$' && -n $1 ]] || return 1
+  local secs=$(( ${match[2]:-0} * 3600 + ${match[4]:-0} * 60 ))
+  (( secs > 0 )) || return 1
+  print -r -- $secs
+}
+
+parse_args() {
+  CMD=run LIMIT=0 NOCLAUDE=0
+  FLOOR=$DEFAULT_FLOOR UNPLUG=$DEFAULT_UNPLUG LOWPOWER=$DEFAULT_LOWPOWER
+  local secs
+  while (( $# )); do
+    case $1 in
+      setup|uninstall|hook|watchdog) CMD=$1 ;;
+      --no-claude) NOCLAUDE=1 ;;
+      --unplug) UNPLUG=1 ;;
+      --low-power) LOWPOWER=1 ;;
+      --battery)
+        [[ $2 == <1-99> ]] || { usage >&2; return 1 }
+        FLOOR=$2; shift ;;
+      *)
+        secs=$(parse_duration "$1") || { usage >&2; return 1 }
+        LIMIT=$secs ;;
+    esac
+    shift
+  done
+}
+
+main() {
+  parse_args "$@" || exit 1
+  local rc=0
+  case $CMD in
+    hook) exit 0 ;;  # always 0, never prints
+    *) print -u2 "eepy $CMD: not built yet"; rc=1 ;;
+  esac
+  exit $rc
+}
+
+[[ $ZSH_EVAL_CONTEXT == toplevel ]] && main "$@"
