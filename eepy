@@ -3,6 +3,8 @@
 
 zmodload zsh/datetime zsh/system
 
+VERSION=0.1.0
+
 # ---- Defaults (owner-editable) ----
 DEFAULT_FLOOR=20      # battery floor, percent
 DEFAULT_UNPLUG=0      # 1 = treat "on battery" as a trigger
@@ -25,8 +27,8 @@ RUNNING_STATUSES="running pending"  # background_tasks statuses that count as st
 EEPY_HOME=${EEPY_HOME:-$HOME/.eepy}
 EEPY_LOG=${EEPY_LOG:-$HOME/Library/Logs/eepy.log}
 
-# ---- Loop state (epoch seconds; END=0 means no limit) ----
-HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT=
+# ---- Loop state (epoch seconds; END=0 means no limit; LOCK_FD is set once this eepy holds the lock) ----
+HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT= LOCK_FD=
 
 # ---- Readers: thin wrappers over macOS commands ----
 read_lid() {
@@ -289,7 +291,12 @@ check_once() {
   t=$(now)
   touch $EEPY_HOME/heartbeat
   prev=$HOLDING; HOLDING=$(read_held)
-  [[ $prev != $HOLDING ]] && log "FAILURE expected holding=$prev, SleepDisabled says $HOLDING; following SleepDisabled"
+  if (( !prev && HOLDING )) && [[ $(read_attended) == 0 ]]; then   # never adopt a hold while unattended
+    log "FAILURE expected holding=0, SleepDisabled says 1 while unattended; releasing"
+    release; HOLDING=$(read_held)
+  elif [[ $prev != $HOLDING ]]; then
+    log "FAILURE expected holding=$prev, SleepDisabled says $HOLDING; following SleepDisabled"
+  fi
   if [[ -n $STOPPING ]]; then
     release; HOLDING=$(read_held)
     (( HOLDING )) && return 0
@@ -315,7 +322,7 @@ check_once() {
     release) log "released: no active sessions"; release; HOLDING=$(read_held) ;;
     pause) log "$reason (attended: released, not sleeping)"; release; HOLDING=$(read_held) ;;
     stop)
-      if (( timeup )); then STOPPING="time limit reached"
+      if (( timeup )); then STOPPING="TRIGGER time limit reached"
       elif (( gap )); then STOPPING="FAILURE gap: no check for ${elapsed}s while holding"
       else STOPPING=$reason
       fi
@@ -335,18 +342,18 @@ check_once() {
 }
 
 run() {
-  trap on_signal INT TERM HUP
+  trap on_signal INT TERM HUP QUIT
   trap '' TSTP PIPE
-  local lockfd
-  mkdir -p $EEPY_HOME/sessions && : >> $EEPY_HOME/lock
-  zsystem flock -t 0 -f lockfd $EEPY_HOME/lock 2>/dev/null || { print -u2 "eepy is already running"; return 1 }
+  mkdir -p $EEPY_HOME/sessions 2>/dev/null || { print -u2 "cannot create $EEPY_HOME/sessions"; return 1 }
+  { : >> $EEPY_HOME/lock } 2>/dev/null || { print -u2 "cannot create $EEPY_HOME/lock"; return 1 }
+  zsystem flock -t 0 -f LOCK_FD $EEPY_HOME/lock 2>/dev/null || { print -u2 "eepy is already running"; return 1 }
   sudo -k -n -l /usr/bin/pmset -a disablesleep 0 >/dev/null 2>&1 &&
     sudo -k -n -l /usr/bin/pmset -a disablesleep 1 >/dev/null 2>&1 &&
     sudo -k -n -l /usr/bin/pmset sleepnow >/dev/null 2>&1 || { print -u2 'run "eepy setup" first'; return 1 }
   launchctl print gui/$UID/local.eepy.watchdog >/dev/null 2>&1 ||
     { print -u2 'the eepy watchdog is not loaded; run "eepy setup"'; return 1 }
   LOG_TTY=1
-  log "start: limit=${LIMIT}s no-claude=$NOCLAUDE battery-floor=$FLOOR% unplug=$UNPLUG low-power=$LOWPOWER" \
+  log "start: eepy $VERSION limit=${LIMIT}s no-claude=$NOCLAUDE battery-floor=$FLOOR% unplug=$UNPLUG low-power=$LOWPOWER" \
     "grace=${GRACE}s interval=${INTERVAL}s thermal-max=$THERMAL_MAX temp-max=$TEMP_MAX cap=${CAP}s" \
     "heartbeat-max=${HEARTBEAT_MAX}s hops=$HOPS"
   (( LIMIT > 0 )) && END=$(( $(now) + LIMIT ))
@@ -357,7 +364,8 @@ run() {
 }
 
 on_signal() {
-  trap '' INT TERM HUP
+  [[ -n $LOCK_FD ]] || exit 0   # not holding the lock: any hold belongs to another eepy
+  trap '' INT TERM HUP QUIT
   release
   log "stopped by signal"
   kill %sleep 2>/dev/null   # zsh defers exit inside a function, and `wait` would sit out the whole sleep

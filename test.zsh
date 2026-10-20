@@ -276,13 +276,16 @@ t_all_day() {   # uc8, uc10, uc1, uc26
 }
 t_noclaude()     { loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once; is $HOLDING 1 uc12-holds-without-sessions }
 t_time_limit()   { loop_reset; lid Yes; NOCLAUDE=1; HOLDING=1; held Yes; END=2000; NOW=2000
-  check_once; is $? 1 uc11-stops; grep -q 'time limit reached' $EEPY_LOG || is missing logged uc11-logged }
+  check_once; is $? 1 uc11-stops; grep -q 'TRIGGER time limit reached' $EEPY_LOG || is missing logged uc11-logged }
 t_stop_trigger() { loop_reset; lid Yes; NOW=1000; sess working; HOLDING=1; held Yes; OS_OUT='2 0'
   check_once; is $? 1 uc17-stops
   is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" uc17-release-and-sleep }
 t_stop_retry()   { loop_reset; lid Yes; NOW=1000; sess working; HOLDING=1; held Yes; OS_OUT='2 0'; SUDO_RC=1
   check_once; is $? 0 uc27-failed-stop-keeps-running
-  SUDO_RC=0; NOW=1030; check_once; is $? 1 uc27-stop-retried }
+  SUDO_RC=0; OS_OUT='0 0'; NOW=1030; check_once; is "$? $HOLDING" "1 0" uc27-stop-retried }
+t_stop_retry_gap() { loop_reset; lid Yes; sess working 1000; HOLDING=1; held Yes; LAST_CHECK=1000; NOW=1091; SUDO_RC=1
+  check_once; is "$? $HOLDING" "0 1" uc27-failed-gap-stop-keeps-running
+  SUDO_RC=0; NOW=1121; check_once; is "$? $HOLDING" "1 0" uc27-gap-stop-retried }
 t_pause()        { loop_reset; lid No; NOW=1000; sess working; HOLDING=1; held Yes; OS_OUT='2 0'
   check_once; is "$? $HOLDING" "0 0" uc18-pauses
   [[ "$CALLS" == *sleepnow* ]] && is slept "not slept" uc18-never-sleeps-attended
@@ -298,18 +301,25 @@ t_reconcile()    { loop_reset; lid Yes; NOW=1000; sess working; HOLDING=1; held 
 t_reconcile_up() { loop_reset; lid No; NOW=1000; HOLDING=0; held Yes   # uc28 stray hold, nothing wanted
   check_once; is $HOLDING 0 stray-hold-released
   [[ "$CALLS" == *'disablesleep 0'* ]] || is missing released stray-hold-release-call }
+t_reconcile_up_unattended() { loop_reset; lid Yes; NOW=1000; sess working; HOLDING=0; held Yes   # stray hold in the bag
+  check_once; is $HOLDING 0 stray-hold-released-unattended
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" stray-hold-release-and-sleep }
 t_gap()          { loop_reset; lid Yes; sess working 1000; HOLDING=1; held Yes; LAST_CHECK=1000; NOW=1091
   check_once; is $? 1 uc25-gap-stops; grep -q 'FAILURE gap' $EEPY_LOG || is missing logged uc25-logged }
 t_gap_after_watchdog() { loop_reset; lid Yes; sess working 1000; HOLDING=1; held No; LAST_CHECK=1000; NOW=1200
   check_once; is $? 1 uc25-stops-even-if-watchdog-released }
-t_heartbeat()    { loop_reset; lid No; NOW=1000; check_once; [[ -e $EEPY_HOME/heartbeat ]] || is missing written heartbeat }
+t_gap_boundary() { loop_reset; lid Yes; sess working 1000; HOLDING=1; held Yes; LAST_CHECK=1000; NOW=1090
+  check_once; is "$? $HOLDING" "0 1" exactly-3-intervals-is-not-a-gap }
+t_heartbeat()    { loop_reset; lid No; NOW=1000; check_once; [[ -e $EEPY_HOME/heartbeat ]] || is missing written heartbeat
+  touch -t 200001010000 $EEPY_HOME/heartbeat; NOW=1030; check_once
+  (( $(stat -f %m $EEPY_HOME/heartbeat) > EPOCHSECONDS - 60 )) || is stale refreshed heartbeat-refreshed }
 wait_for() { local i; for i in {1..50}; do grep -q "$1" $2 2>/dev/null && return 0; sleep 0.1; done; return 1 }
 t_single_instance() {   # Review Focus 5
   zsh $TEST_FILE child --no-claude >/dev/null 2>&1 &; local p=$!
   wait_for 'disablesleep 1' $EEPY_HOME/calls || is no first-held first-instance-holds
   zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 second-refused
   grep -q 'already running' $EEPY_HOME/err2 || is missing said already-running-message
-  kill -KILL $p; wait $p 2>/dev/null
+  kill -TERM $p; wait $p 2>/dev/null
 }
 t_signal_release() {   # Review Focus 1
   zsh $TEST_FILE child --no-claude | true &
@@ -321,18 +331,34 @@ t_signal_release() {   # Review Focus 1
 t_signal_exits() {   # a stopped eepy must not linger in `wait` (holding the lock) until the sleep ends
   zsh $TEST_FILE child --no-claude >/dev/null 2>&1 &; local p=$! i
   wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held child-holds
-  kill -TERM $p
+  grep -q "start: eepy $VERSION " $EEPY_LOG || is missing logged start-line-version
+  kill -QUIT $p
   for i in {1..20}; do kill -0 $p 2>/dev/null || break; sleep 0.1; done
   kill -0 $p 2>/dev/null && { is lingering exited exits-promptly; kill -KILL $p }
   wait $p 2>/dev/null
+  grep -q 'stopped by signal' $EEPY_LOG || is missing logged quit-trapped
+  grep -q 'disablesleep 0' $EEPY_HOME/calls || is missing released quit-releases
+}
+t_signal_without_lock() {   # a second eepy signalled before it has the lock must not release the first one's hold
+  loop_reset; held Yes; LOCK_FD=
+  ( on_signal ); is $? 0 exits-0
+  [[ -s $EEPY_HOME/calls ]] && is called "nothing called" no-release
+  grep -q 'stopped by signal' $EEPY_LOG 2>/dev/null && is logged "not logged" no-log
 }
 t_start_checks() {
   SUDO_L_RC=1 zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-sudo-rule
   grep -q 'eepy setup' $EEPY_HOME/err2 || is missing said sudo-message
   AGENT_RC=1 zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-watchdog
   grep -q 'watchdog' $EEPY_HOME/err2 || is missing said watchdog-message
+  : > $EEPY_HOME/file
+  EEPY_HOME=$EEPY_HOME/file/h zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-home
+  is "$(<$EEPY_HOME/err2)" "cannot create $EEPY_HOME/file/h/sessions" home-message
+  mkdir -p $EEPY_HOME/h2/sessions $EEPY_HOME/h2/lock
+  EEPY_HOME=$EEPY_HOME/h2 zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-lock-file
+  is "$(<$EEPY_HOME/err2)" "cannot create $EEPY_HOME/h2/lock" lock-message
   [[ -s $EEPY_HOME/calls ]] && is called "nothing called" refusals-touch-nothing
 }
+t_runner_unknown_group() { zsh $TEST_FILE t_no_such_group >/dev/null 2>&1 && is passed failed unknown-group-fails }
 
 # ---- runner ----
 # Abort before any group if the stubs cannot be loaded (never fall through to real sudo).
@@ -344,6 +370,7 @@ groups=("$@")
 (( $#groups )) || groups=(${(ok)functions[(I)t_*]})
 failed=0
 for GROUP in $groups; do
+  (( $+functions[$GROUP] )) || { failed=1; print -r -- "FAIL $GROUP (no such group)"; continue }
   (
     export EEPY_HOME=$(mktemp -d) EEPY_LOG
     EEPY_LOG=$EEPY_HOME/log
