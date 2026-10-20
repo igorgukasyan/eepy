@@ -242,6 +242,20 @@ t_sessions() {
   is "$(ls $d | tr '\n' ' ')" "g " safety-only-future-kept
 }
 
+t_hold_release() {
+  local open='"AppleClamshellState" = No' closed='"AppleClamshellState" = Yes'
+  CALLS=(); hold; is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 1" hold-call
+  CALLS=(); LID_OUT=$open; release
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0" uc13-release-attended-never-sleeps
+  CALLS=(); LID_OUT=$closed; release
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" uc1-release-unattended-sleeps
+  CALLS=(); SUDO_RC=1; ROOT_OUT='"SleepDisabled" = Yes'; release; is $? 1 uc27-release-fails
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" uc27-still-tries-sleepnow
+  grep -q 'FAILURE release failed' $EEPY_LOG || is missing logged uc27-logged
+  CALLS=(); LID_OUT=$open; ROOT_OUT='"SleepDisabled" = No'; hold; is $? 1 hold-fails
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 1|-n /usr/bin/pmset -a disablesleep 0" hold-failure-releases
+}
+
 # ---- runner ----
 # Abort before any group if the stubs cannot be loaded (never fall through to real sudo).
 ( export EEPY_HOME=$(mktemp -d) EEPY_LOG=/dev/null; load_eepy ) >/dev/null 2>&1

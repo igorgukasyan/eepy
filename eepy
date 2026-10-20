@@ -245,6 +245,40 @@ hook() {
   return 0
 }
 
+# The only two functions that change the power setting. Callers re-read read_held; they never trust the return value.
+hold() {
+  local why
+  mkdir -p $EEPY_HOME
+  sudo -n /usr/bin/pmset -a disablesleep 1 2>$EEPY_HOME/err
+  if [[ $(read_held) == 1 ]]; then
+    log "hold: disablesleep 1, read back Yes"
+    return 0
+  fi
+  why=$(<$EEPY_HOME/err 2>/dev/null)
+  log "FAILURE hold failed: ${why:-read back No}"
+  release
+  return 1
+}
+
+release() {
+  local ok=0 why
+  mkdir -p $EEPY_HOME
+  sudo -n /usr/bin/pmset -a disablesleep 0 2>$EEPY_HOME/err
+  [[ $(read_held) == 0 ]] && ok=1
+  if (( ok )); then
+    log "release: disablesleep 0, read back No"
+  else
+    why=$(<$EEPY_HOME/err 2>/dev/null)
+    log "FAILURE release failed: ${why:-read back Yes}"
+  fi
+  if [[ $(read_attended) == 0 ]]; then
+    sudo -n /usr/bin/pmset sleepnow 2>/dev/null
+    log "sleepnow (unattended)"
+  fi
+  (( ok )) && return 0
+  return 1
+}
+
 parse_args() {
   CMD=run LIMIT=0 NOCLAUDE=0
   FLOOR=$DEFAULT_FLOOR UNPLUG=$DEFAULT_UNPLUG LOWPOWER=$DEFAULT_LOWPOWER
