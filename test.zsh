@@ -232,6 +232,14 @@ t_sessions() {
   scan_sessions 4599; is $ACTIVE 2 uc4-just-under-cap
   scan_sessions 4600; is $ACTIVE 0 uc4-cap-reached
   rm -rf $d; scan_sessions 1500; is "$ACTIVE" 0 missing-dir
+  mkdir -p $d
+  mk g working 9999 4000 L1       # future activity: kept, not active
+  mk h working abc  4000 L1       # non-numeric activity: deleted
+  print -rl -- working 1000 4000 > $d/i   # 3 lines: deleted
+  mk j sleeping 1000 4000 L1      # unknown state: deleted
+  mk k working 1000 4999 ''       # empty start, dead pid: deleted
+  scan_sessions 1500; is $ACTIVE 0 safety-none-active
+  is "$(ls $d | tr '\n' ' ')" "g " safety-only-future-kept
 }
 
 # ---- runner ----

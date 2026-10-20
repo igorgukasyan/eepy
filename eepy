@@ -234,7 +234,7 @@ scan_sessions() {
     [[ "$(proc_start $pid)" == "$start" ]] || { rm -f $f; continue }
     age=$(( now - act ))
     id=${f:t}; R+=("${id[1,8]} $st ${age}s")
-    [[ $st != finished ]] && (( age < CAP )) && (( ACTIVE++ ))
+    [[ $st != finished ]] && (( age >= 0 && age < CAP )) && (( ACTIVE++ ))
   done
   REPORT=${(j:, :)R}
 }
