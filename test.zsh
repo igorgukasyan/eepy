@@ -358,6 +358,18 @@ t_start_checks() {
   is "$(<$EEPY_HOME/err2)" "cannot create $EEPY_HOME/h2/lock" lock-message
   [[ -s $EEPY_HOME/calls ]] && is called "nothing called" refusals-touch-nothing
 }
+t_watchdog() {
+  local hb=$EEPY_HOME/heartbeat; NOW=$EPOCHSECONDS
+  age() { touch -t $(date -r $((NOW-$1)) +%Y%m%d%H%M.%S) $hb }
+  CALLS=(); ROOT_OUT='"SleepDisabled" = Yes'; age 10;  watchdog; is "${#CALLS}" 0 fresh-heartbeat
+  CALLS=(); ROOT_OUT='"SleepDisabled" = No';  age 100; watchdog; is "${#CALLS}" 0 stale-but-released
+  CALLS=(); ROOT_OUT='"SleepDisabled" = Yes'; LID_OUT='"AppleClamshellState" = Yes'; age 100; watchdog
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" uc23-stale-unattended
+  CALLS=(); ROOT_OUT='"SleepDisabled" = Yes'; rm -f $hb; LID_OUT='"AppleClamshellState" = No'; watchdog
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0" uc24-missing-heartbeat
+  CALLS=(); ROOT_OUT=''; age 100; watchdog; is "${CALLS[1]}" "-n /usr/bin/pmset -a disablesleep 0" unreadable-counts-as-held
+  grep -q 'FAILURE watchdog' $EEPY_LOG || is missing logged watchdog-logged
+}
 t_runner_unknown_group() { zsh $TEST_FILE t_no_such_group >/dev/null 2>&1 && is passed failed unknown-group-fails }
 
 # ---- runner ----

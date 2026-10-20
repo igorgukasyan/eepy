@@ -285,6 +285,18 @@ release() {
   return 1
 }
 
+# Run by the LaunchAgent: releases when sleep is disabled and the heartbeat is stale or missing.
+watchdog() {
+  local mt age=missing
+  mt=$(stat -f %m $EEPY_HOME/heartbeat 2>/dev/null)
+  [[ $mt == <-> ]] && age=$(( $(now) - mt ))
+  [[ $age == missing ]] || (( age > HEARTBEAT_MAX )) || return 0
+  [[ $(read_held) == 1 ]] || return 0
+  [[ $age == missing ]] || age="${age}s old"
+  log "FAILURE watchdog: heartbeat $age, sleep was disabled; releasing"
+  release
+}
+
 # One pass of the spec's Behaviour. Returns 0 to carry on, 1 once eepy has stopped and released.
 check_once() {
   local t prev elapsed gap=0 want=0 timeup=0 tripped=0 attended th lpm temp pct src reason tc s
@@ -399,6 +411,7 @@ main() {
   case $CMD in
     hook) hook ;;  # always 0, never prints
     run) run || rc=1 ;;
+    watchdog) watchdog ;;
     *) print -u2 "eepy $CMD: not built yet"; rc=1 ;;
   esac
   exit $rc
