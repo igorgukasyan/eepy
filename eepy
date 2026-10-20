@@ -22,10 +22,12 @@ HOPS=20               # process-tree hops when looking for the Claude process
 # ---- Claude Code facts (from the pre-flight probe) ----
 CLAUDE_NAME=claude                # comm of the Claude Code process
 RUNNING_STATUSES="running pending"  # background_tasks statuses that count as still running
+HOOK_FORM=exec                    # exec: {"command": path, "args": ["hook"]}; anything else: {"command": "path hook"}
 
 # ---- Paths ----
 EEPY_HOME=${EEPY_HOME:-$HOME/.eepy}
 EEPY_LOG=${EEPY_LOG:-$HOME/Library/Logs/eepy.log}
+EEPY_PATH=${${(%):-%x}:A}
 
 # ---- Loop state (epoch seconds; END=0 means no limit; LOCK_FD is set once this eepy holds the lock) ----
 HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT= LOCK_FD=
@@ -297,6 +299,132 @@ watchdog() {
   release
 }
 
+# ---- Setup and uninstall ----
+sudoers_text() {
+  print -r -- "$1 ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset sleepnow"
+}
+
+agent_plist() {
+  cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.eepy.watchdog</string>
+  <key>ProgramArguments</key><array><string>$1</string><string>watchdog</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>60</integer>
+  <key>StandardErrorPath</key><string>$EEPY_HOME/watchdog.err</string>
+</dict>
+</plist>
+PLIST
+}
+
+# JSON on stdin, JSON on stdout. Any jq error: returns 1 with no output.
+merge_hooks() {
+  local out
+  out=$(jq --arg p "$1" --arg form "$HOOK_FORM" '
+    (if $form == "exec" then {type: "command", command: $p, args: ["hook"]}
+     else {type: "command", command: ($p + " hook")} end) as $h
+    | def add($ev; $m): .hooks[$ev] += [(if $m == "" then {hooks: [$h]} else {matcher: $m, hooks: [$h]} end)];
+    if type != "object" then error("not an object") else . end
+    | (.hooks // {}) as $old
+    | .hooks = ($old | map_values(map(.hooks |= map(select(((.command // "") | startswith($p)) | not)))
+                                  | map(select((.hooks | length) > 0))))
+    | add("UserPromptSubmit"; "") | add("PostToolUse"; "")
+    | add("PreToolUse"; "AskUserQuestion|ExitPlanMode") | add("Stop"; "") | add("StopFailure"; "")
+    | add("Notification"; "permission_prompt|elicitation_dialog|idle_prompt") | add("SessionEnd"; "")
+  ' 2>/dev/null) || return 1
+  print -r -- $out
+}
+
+unmerge_hooks() {
+  local out
+  out=$(jq --arg p "$1" '
+    if type != "object" then error("not an object") else . end
+    | if has("hooks") then
+        .hooks |= map_values(map(.hooks |= map(select(((.command // "") | startswith($p)) | not)))
+                             | map(select((.hooks | length) > 0))
+                             | select(length > 0))
+        | if (.hooks | length) == 0 then del(.hooks) else . end
+      else . end
+  ' 2>/dev/null) || return 1
+  print -r -- $out
+}
+
+# 0 when no eepy holds the lock. The subshell drops the lock on exit.
+lock_free() {
+  mkdir -p $EEPY_HOME
+  { : >> $EEPY_HOME/lock } 2>/dev/null || return 1
+  ( zsystem flock -t 0 $EEPY_HOME/lock ) 2>/dev/null
+}
+
+setup_fail() {   # setup_fail <step number> <what failed>
+  print -u2 "eepy setup failed at step $1: $2"
+  (( $1 <= 2 )) && print -u2 "company security tooling may have blocked this; nothing else was changed"
+  return 1
+}
+
+setup() {
+  local me=$EEPY_PATH tmp args settings=$HOME/.claude/settings.json
+  local plist=$HOME/Library/LaunchAgents/local.eepy.watchdog.plist
+  local -a sets=("-a disablesleep 0" "-a disablesleep 1" "sleepnow")
+  mkdir -p $EEPY_HOME || { setup_fail 1 "cannot create $EEPY_HOME"; return 1 }
+  sudo -v || { setup_fail 1 "sudo -v"; return 1 }
+  tmp=$(mktemp) || { setup_fail 2 "cannot make a temp file"; return 1 }
+  sudoers_text $USER > $tmp
+  /usr/sbin/visudo -cf $tmp >/dev/null 2>&1 || { rm -f $tmp; setup_fail 2 "the sudoers rule failed visudo's syntax check"; return 1 }
+  sudo install -m 440 -o root -g wheel $tmp /etc/sudoers.d/eepy || { rm -f $tmp; setup_fail 2 "installing /etc/sudoers.d/eepy"; return 1 }
+  rm -f $tmp
+  for args in $sets; do
+    sudo -k -n -l /usr/bin/pmset ${=args} >/dev/null 2>&1 || { setup_fail 2 "sudo does not accept 'pmset $args' without a password"; return 1 }
+  done
+  mkdir -p ${plist:h}
+  agent_plist $me > $plist || { setup_fail 3 "writing $plist"; return 1 }
+  launchctl bootout gui/$UID/local.eepy.watchdog >/dev/null 2>&1
+  launchctl bootstrap gui/$UID $plist || { setup_fail 3 "launchctl bootstrap of the watchdog"; return 1 }
+  mkdir -p $HOME/.local/bin
+  ln -sf $me $HOME/.local/bin/eepy || { setup_fail 4 "linking ~/.local/bin/eepy"; return 1 }
+  mkdir -p ${settings:h}
+  local json='{}' merged backup=$settings.eepy-backup-$(now)
+  if [[ -e $settings ]]; then
+    cp $settings $backup || { setup_fail 5 "backing up settings.json"; return 1 }
+    json=$(<$settings)
+  else
+    backup="(none, the file did not exist)"
+  fi
+  merged=$(print -r -- $json | merge_hooks $me) || { setup_fail 5 "settings.json is not valid JSON; it was not changed"; return 1 }
+  tmp=$settings.eepy-tmp.$$
+  print -r -- $merged > $tmp && mv -f $tmp $settings || { rm -f $tmp; setup_fail 5 "writing settings.json"; return 1 }
+  print "eepy is set up:
+  sudoers rule   /etc/sudoers.d/eepy
+  watchdog       $plist
+  command        ~/.local/bin/eepy -> $me
+  hooks          merged into $settings (backup: $backup)
+Start a new Claude Code session for the hooks to take effect, then run: eepy"
+}
+
+uninstall() {
+  local me=$EEPY_PATH tmp json out backup settings=$HOME/.claude/settings.json
+  local plist=$HOME/Library/LaunchAgents/local.eepy.watchdog.plist
+  lock_free || { print -u2 "eepy is running; stop it first"; return 1 }
+  sudo -v || { print -u2 "eepy uninstall: sudo -v failed; nothing was changed"; return 1 }
+  [[ $(read_held) == 1 ]] && release
+  if [[ -e $settings ]]; then
+    backup=$settings.eepy-backup-$(now)
+    cp $settings $backup || { print -u2 "eepy uninstall: cannot back up settings.json; stopped"; return 1 }
+    out=$(unmerge_hooks $me < $settings) || { print -u2 "eepy uninstall: settings.json is not valid JSON; stopped"; return 1 }
+    tmp=$settings.eepy-tmp.$$
+    print -r -- $out > $tmp && mv -f $tmp $settings || { rm -f $tmp; print -u2 "eepy uninstall: cannot write settings.json; stopped"; return 1 }
+  fi
+  rm -f $HOME/.local/bin/eepy
+  sudo rm -f /etc/sudoers.d/eepy || { print -u2 "eepy uninstall: cannot remove /etc/sudoers.d/eepy; stopped"; return 1 }
+  launchctl bootout gui/$UID/local.eepy.watchdog >/dev/null 2>&1
+  rm -f $plist
+  rm -rf $EEPY_HOME
+  print "eepy is uninstalled. The log is kept at $EEPY_LOG${backup:+, and settings.json was backed up to $backup}."
+}
+
 # One pass of the spec's Behaviour. Returns 0 to carry on, 1 once eepy has stopped and released.
 check_once() {
   local t prev elapsed gap=0 want=0 timeup=0 tripped=0 attended th lpm temp pct src reason tc s
@@ -412,6 +540,8 @@ main() {
     hook) hook ;;  # always 0, never prints
     run) run || rc=1 ;;
     watchdog) watchdog ;;
+    setup) setup || rc=1 ;;
+    uninstall) uninstall || rc=1 ;;
     *) print -u2 "eepy $CMD: not built yet"; rc=1 ;;
   esac
   exit $rc

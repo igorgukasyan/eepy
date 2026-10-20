@@ -370,6 +370,32 @@ t_watchdog() {
   CALLS=(); ROOT_OUT=''; age 100; watchdog; is "${CALLS[1]}" "-n /usr/bin/pmset -a disablesleep 0" unreadable-counts-as-held
   grep -q 'FAILURE watchdog' $EEPY_LOG || is missing logged watchdog-logged
 }
+t_setup_text() {
+  is "$(sudoers_text igor)" "igor ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset sleepnow" sudoers-exact
+  sudoers_text igor > $EEPY_HOME/s; /usr/sbin/visudo -cf $EEPY_HOME/s >/dev/null 2>&1 || is invalid valid visudo-syntax
+  agent_plist /x/eepy | plutil -lint - >/dev/null || is invalid valid plist-lint
+  is "$(agent_plist /x/eepy | plutil -extract StartInterval raw -)" 60 interval
+  is "$(agent_plist /x/eepy | plutil -extract ProgramArguments.1 raw -)" watchdog runs-watchdog
+}
+t_merge_hooks() {   # Review Focus 4
+  local E=/Users/x/.local/bin/eepy m other='{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}'
+  m=$(print '{}' | merge_hooks $E); is "$(print -r $m | jq '.hooks | keys | length')" 7 seven-events
+  is "$(print -r $m | jq -r '.hooks.PreToolUse[0].matcher')" 'AskUserQuestion|ExitPlanMode' pretooluse-matcher
+  m=$(print -r $other | merge_hooks $E)
+  is "$(print -r $m | jq -r .model)" opus keeps-settings
+  is "$(print -r $m | jq '[.hooks.Stop[].hooks[].command] | index("say done") != null')" true keeps-other-hooks
+  is "$(print -r $m | merge_hooks $E | jq -S .)" "$(print -r $m | jq -S .)" idempotent
+  is "$(print -r $m | unmerge_hooks $E | jq -S .)" "$(print -r $other | jq -S .)" unmerge-restores
+  is "$(print '{}' | merge_hooks $E | unmerge_hooks $E | jq -c .)" '{}' unmerge-to-empty
+  local out; out=$(print 'not json' | merge_hooks $E); is "$? $out" "1 " invalid-json-aborts-silently
+}
+t_uninstall_refuses() {   # Review Focus 5
+  zsh $TEST_FILE child --no-claude >/dev/null 2>&1 &; local p=$!
+  wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held child-holds
+  zsh $TEST_FILE child uninstall >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-while-running
+  grep -q 'stop it first' $EEPY_HOME/err2 || is missing said refusal-message
+  kill -KILL $p; wait $p 2>/dev/null
+}
 t_runner_unknown_group() { zsh $TEST_FILE t_no_such_group >/dev/null 2>&1 && is passed failed unknown-group-fails }
 
 # ---- runner ----
