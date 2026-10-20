@@ -132,6 +132,43 @@ t_readers() {
   OS_OUT='';      is "$(read_os)" "? ?" os-unreadable
 }
 
+t_trigger() {
+  FLOOR=20 UNPLUG=0 LOWPOWER=0
+  is "$(trigger 0 3038 57 battery 0)" "" calm
+  is "$(trigger 2 3038 57 battery 0)" "TRIGGER heat: thermal pressure 2 (limit 2)" uc17-serious
+  is "$(trigger 3 3038 57 battery 0)" "TRIGGER heat: thermal pressure 3 (limit 2)" critical
+  is "$(trigger 1 4000 57 battery 0)" "TRIGGER battery temperature 40.00°C (limit 40.00°C)" uc17-hot-battery
+  is "$(trigger 1 3999 57 battery 0)" "" just-under-40
+  is "$(trigger 0 3038 20 battery 0)" "TRIGGER battery 20% (floor 20%)" uc19-floor
+  is "$(trigger 0 3038 15 ac 0)" "" uc19-floor-ignored-on-mains
+  is "$(trigger 0 3038 57 battery 1)" "" uc21-lpm-off-by-default
+  UNPLUG=1;   is "$(trigger 0 3038 57 battery 0)" "TRIGGER on battery (--unplug)" uc20-unplug
+              is "$(trigger 0 3038 57 ac 0)" "" uc20-on-mains
+  UNPLUG=0 LOWPOWER=1
+              is "$(trigger 0 3038 57 ac 1)" "TRIGGER Low Power Mode on (--low-power)" uc21-lpm
+              is "$(trigger 0 3038 57 ac '?')" "FAILURE Low Power Mode unreadable" lpm-unreadable
+  LOWPOWER=0; is "$(trigger 0 3038 57 ac '?')" "" lpm-unread-ignored-when-off
+  is "$(trigger '?' 3038 57 battery 0)" "FAILURE thermal pressure unreadable" uc22-thermal
+  is "$(trigger 0 '?' 57 battery 0)"    "FAILURE battery temperature unreadable" uc22-temp
+  is "$(trigger 0 3038 '?' '?' 0)"      "FAILURE battery level unreadable" uc22-batt
+}
+t_decide() {
+  #            holding attended want tripped gap timeup
+  is "$(decide 0 1 1 0 0 0)" hold    uc1-start-attended
+  is "$(decide 0 0 1 0 0 0)" stay    uc26-never-arm-unattended
+  is "$(decide 1 0 1 0 0 0)" stay    uc1-lid-closed-working
+  is "$(decide 1 0 0 0 0 0)" release uc1-finished
+  is "$(decide 1 1 0 0 0 0)" release uc10-idle-at-desk
+  is "$(decide 1 0 1 1 0 0)" stop    uc17-heat-in-bag
+  is "$(decide 1 1 1 1 0 0)" pause   uc18-heat-at-desk
+  is "$(decide 0 1 1 1 0 0)" stay    uc18-no-rehold-while-tripped
+  is "$(decide 0 0 0 1 0 0)" stay    trigger-while-released-is-ignored
+  is "$(decide 1 0 1 0 1 0)" stop    uc25-gap-in-bag
+  is "$(decide 0 0 1 0 1 0)" stop    uc25-gap-after-watchdog-released
+  is "$(decide 1 1 1 0 1 0)" stay    gap-attended-carries-on
+  is "$(decide 0 1 0 0 0 1)" stop    uc11-time-limit
+}
+
 # ---- runner ----
 # Abort before any group if the stubs cannot be loaded (never fall through to real sudo).
 ( export EEPY_HOME=$(mktemp -d) EEPY_LOG=/dev/null; load_eepy ) >/dev/null 2>&1

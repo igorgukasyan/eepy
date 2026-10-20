@@ -71,6 +71,35 @@ read_batt() {
   [[ -n $pct && -n $src ]] && print "$pct $src" || print '? ?'
 }
 
+# Prints one TRIGGER or FAILURE reason, or nothing. First matching rule wins.
+trigger() {
+  local th=$1 temp=$2 pct=$3 src=$4 lpm=$5
+  [[ $th == '?' ]] && { print "FAILURE thermal pressure unreadable"; return 0 }
+  [[ $temp == '?' ]] && { print "FAILURE battery temperature unreadable"; return 0 }
+  [[ $pct == '?' ]] && { print "FAILURE battery level unreadable"; return 0 }
+  [[ $src == '?' ]] && { print "FAILURE power source unreadable"; return 0 }
+  [[ $lpm == '?' && $LOWPOWER == 1 ]] && { print "FAILURE Low Power Mode unreadable"; return 0 }
+  (( th >= THERMAL_MAX )) && { print "TRIGGER heat: thermal pressure $th (limit $THERMAL_MAX)"; return 0 }
+  (( temp >= TEMP_MAX )) && { printf 'TRIGGER battery temperature %d.%02d°C (limit 40.00°C)\n' $((temp/100)) $((temp%100)); return 0 }
+  [[ $src == battery ]] && (( pct <= FLOOR )) && { print "TRIGGER battery $pct% (floor $FLOOR%)"; return 0 }
+  [[ $UNPLUG == 1 && $src == battery ]] && { print "TRIGGER on battery (--unplug)"; return 0 }
+  [[ $LOWPOWER == 1 && $lpm == 1 ]] && print "TRIGGER Low Power Mode on (--low-power)"
+  return 0
+}
+
+# decide <holding> <attended> <want> <tripped> <gap> <timeup>: prints stop, pause, release, hold or stay.
+decide() {
+  local holding=$1 attended=$2 want=$3 tripped=$4 gap=$5 timeup=$6
+  if (( timeup )); then print stop
+  elif (( gap && !attended )); then print stop
+  elif (( holding && tripped && !attended )); then print stop
+  elif (( holding && tripped && attended )); then print pause
+  elif (( holding && !want )); then print release
+  elif (( !holding && want && !tripped && attended )); then print hold
+  else print stay
+  fi
+}
+
 usage() {
   cat <<'USAGE'
 Commands:
