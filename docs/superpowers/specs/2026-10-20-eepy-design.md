@@ -309,15 +309,27 @@ Check these first, before building on them:
 
 1. Security tooling allows the sudoers rule and the user LaunchAgent.
 2. `sudo -n /usr/bin/pmset sleepnow` works with the lid closed and puts the Mac to sleep; releasing alone does not.
+   - Result: deferred to the owner session (Task 11).
 3. Hooks in exec form: the config syntax, that the parent is the Claude process, and its process name in the terminal and the VS Code extension.
+   - Result: exec form `{"type":"command","command":"<abs path>","args":[]}` works. The hook's parent `comm` is `claude` (checked with `claude -p` only; interactive terminal and VS Code extension not yet checked).
 
 Check these during the build:
 
 4. `Stop` fires with `background_tasks` filled in when a turn ends while a background sub-agent runs, and which `status` values mean still running.
+   - Result: confirmed for a background shell (`type` `shell`) and a background sub-agent (`type` `subagent`). Only `running` was seen while work was pending, and the final `Stop` had `background_tasks: []`, so a finished task simply drops out of the list. `session_crons` is present (`[]`). `SubagentStop` fires while the sub-agent is still listed as `running`, so rely on `Stop`, not `SubagentStop`.
 5. `PostToolUse` fires after an approved tool and for sub-agent tool calls.
+   - Result: confirmed. Sub-agent tool calls fire `PostToolUse` carrying `agent_id` and `agent_type`; the parent's own calls carry neither.
 6. `idle_prompt` fires after an Esc interrupt.
 7. Whether `permission_prompt` fires immediately or after a delay.
 8. Whether `disablesleep` survives a reboot. Not tested on purpose; the watchdog covers it either way.
 10. How long the `ioreg` read-back takes to show a change after `pmset`.
+   - Result: deferred to the owner session (Task 11).
 11. External display detection. The `IOMobileFramebufferShim` `external` flag is not usable: it reports 2 with no monitor attached. `system_profiler SPDisplaysDataType` takes about 0.2 s.
 9. The battery `Temperature` unit (assumed hundredths of °C).
+   - Result: deferred to the owner session (Task 11).
+
+Pre-flight results (Task 1):
+
+- HOOK_FORM: exec
+- CLAUDE_NAME: claude
+- RUNNING_STATUSES: `running` (the only status value seen). Finished work is absent from `background_tasks`, so treat any listed entry as still running and an empty list as finished.
