@@ -20,6 +20,7 @@ define_stubs() {
     if (( ${SUDO_RC:-0} == 0 )); then
       [[ "$*" == *"disablesleep 1"* ]] && ROOT_OUT='"SleepDisabled" = Yes'
       [[ "$*" == *"disablesleep 0"* ]] && ROOT_OUT='"SleepDisabled" = No'
+    else print -u2 "sudo: stub error"
     fi
     return ${SUDO_RC:-0}
   }
@@ -70,6 +71,7 @@ if [[ $1 == child ]]; then
   define_stubs
   (( $+functions[sudo] )) || { print -u2 "test.zsh: sudo stub missing, aborting"; exit 99 }
   default_state
+  PS_LSTART=(4000 L1)   # a live Claude process for child runs
   main "$@"
   exit $?
 fi
@@ -103,6 +105,7 @@ t_proc_start() {
   is "$(proc_start 4000)" 'Tue Oct 20 13:33:01 2026' trims-trailing
   is "$(proc_start 4001)" 'Tue Oct 20 13:33:01 2026' squeezes
   is "$(proc_start 4999)" '' unknown-pid
+  ps() { print -r -- "$TZ $LC_ALL" }; TZ=Europe/London; is "$(proc_start 1)" "UTC C" fixed-tz-and-locale
 }
 t_now_real() {
   local n; n=$(zsh -fc "source $EEPY_SRC; now")
@@ -120,6 +123,8 @@ t_readers() {
   ROOT_OUT='      "SleepDisabled" = No';  is "$(read_held)" 0 released
   ROOT_OUT='      "SleepDisabled" = Yes'; is "$(read_held)" 1 held
   ROOT_OUT='';                            is "$(read_held)" 1 unreadable-counts-as-held
+  ROOT_OUT='      "SleepDisabled" = Nope'; is "$(read_held)" 1 only-literal-no-is-released
+  is "$(read_sd)" Nope raw-value; ROOT_OUT=''; is "$(read_sd)" '?' raw-unreadable
   BATT_OUT=$'      "Temperature" = 3038\n      "BatteryData" = {"AverageTemperature"=2900,"MaximumTemperature"=40}'
   is "$(read_temp)" 3038 exact-temperature-key
   BATT_OUT='      "VirtualTemperature" = 2909'; is "$(read_temp)" '?' temperature-missing
@@ -251,9 +256,17 @@ t_hold_release() {
   is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" uc1-release-unattended-sleeps
   CALLS=(); SUDO_RC=1; ROOT_OUT='"SleepDisabled" = Yes'; release; is $? 1 uc27-release-fails
   is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" uc27-still-tries-sleepnow
-  grep -q 'FAILURE release failed' $EEPY_LOG || is missing logged uc27-logged
+  grep -qF 'FAILURE release failed: read back Yes, sudo: stub error' $EEPY_LOG || is missing logged uc27-logged
+  grep -qF 'FAILURE sleepnow failed: sudo: stub error' $EEPY_LOG || is missing logged sleepnow-failure-logged
+  is "$(grep -c 'sleepnow (unattended)' $EEPY_LOG)" 1 sleepnow-success-only-logged-on-success
+  CALLS=(); held Maybe; release; grep -qF 'FAILURE release failed: read back Maybe' $EEPY_LOG || is missing logged actual-read-back
   CALLS=(); LID_OUT=$open; ROOT_OUT='"SleepDisabled" = No'; hold; is $? 1 hold-fails
   is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 1|-n /usr/bin/pmset -a disablesleep 0" hold-failure-releases
+  grep -qF 'FAILURE hold failed: read back No, sudo: stub error' $EEPY_LOG || is missing logged hold-failure-read-back
+  SUDO_RC=0; rm -f $EEPY_HOME/err; mkdir $EEPY_HOME/err   # err cannot be opened: pmset must still run
+  CALLS=(); hold; is "${CALLS[1]}" "-n /usr/bin/pmset -a disablesleep 1" unopenable-err-still-holds
+  CALLS=(); LID_OUT=$closed; release
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" unopenable-err-still-releases
 }
 
 loop_reset() { HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 NOCLAUDE=0 STOPPING= SUDO_RC=0 CALLS=()
@@ -274,6 +287,10 @@ t_all_day() {   # uc8, uc10, uc1, uc26
   NOW=1240; sess working; check_once; is $HOLDING 0 uc26-dark-wake-never-arms
   NOW=1270; lid No; check_once; is $HOLDING 1 lid-open-arms-again
 }
+t_not_holding() { loop_reset; lid No; NOW=1000; OS_OUT='2 0'
+  check_once; is "$(tail -1 $EEPY_LOG | cut -d' ' -f3-)" "attended=1 active=0" no-reason-when-not-wanted
+  sess working; check_once; NOW=1030; sess working; check_once; is $HOLDING 0 tripped-not-held
+  is "$(grep -cF 'attended=1 active=1 not holding: TRIGGER heat: thermal pressure 2 (limit 2)' $EEPY_LOG)" 1 reason-logged-once }
 t_noclaude()     { loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once; is $HOLDING 1 uc12-holds-without-sessions }
 t_time_limit()   { loop_reset; lid Yes; NOCLAUDE=1; HOLDING=1; held Yes; END=2000; NOW=2000
   check_once; is $? 1 uc11-stops; grep -q 'TRIGGER time limit reached' $EEPY_LOG || is missing logged uc11-logged }
@@ -321,6 +338,13 @@ t_single_instance() {   # Review Focus 5
   grep -q 'already running' $EEPY_HOME/err2 || is missing said already-running-message
   kill -TERM $p; wait $p 2>/dev/null
 }
+t_prompt_wakes() {   # a prompt just before the lid closes is seen within seconds, not at the next 30 s check
+  zsh $TEST_FILE child >/dev/null 2>&1 &; local p=$!
+  wait_for 'attended=1 active=0' $EEPY_LOG || is no checked first-check
+  print -rl -- working $EPOCHSECONDS 4000 L1 > $EEPY_HOME/s; mv $EEPY_HOME/s $EEPY_HOME/sessions/a
+  wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held holds-within-seconds
+  kill -TERM $p; wait $p 2>/dev/null
+}
 t_signal_release() {   # Review Focus 1
   zsh $TEST_FILE child --no-claude | true &
   wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held child-holds
@@ -348,8 +372,11 @@ t_signal_without_lock() {   # a second eepy signalled before it has the lock mus
 t_start_checks() {
   SUDO_L_RC=1 zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-sudo-rule
   grep -q 'eepy setup' $EEPY_HOME/err2 || is missing said sudo-message
-  AGENT_RC=1 zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-watchdog
-  grep -q 'watchdog' $EEPY_HOME/err2 || is missing said watchdog-message
+  rm -f $EEPY_HOME/watchdog
+  zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-watchdog-stamp
+  is "$(<$EEPY_HOME/err2)" 'the eepy watchdog has not run in the last 2.5 minutes; run "eepy setup"' watchdog-message
+  touch -t 200001010000 $EEPY_HOME/watchdog
+  zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-with-old-watchdog-stamp
   : > $EEPY_HOME/file
   EEPY_HOME=$EEPY_HOME/file/h zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-home
   is "$(<$EEPY_HOME/err2)" "cannot create $EEPY_HOME/file/h/sessions" home-message
@@ -360,7 +387,7 @@ t_start_checks() {
 }
 t_watchdog() {
   local hb=$EEPY_HOME/heartbeat; NOW=$EPOCHSECONDS
-  age() { touch -t $(date -r $((NOW-$1)) +%Y%m%d%H%M.%S) $hb }
+  age() { touch -t $(date -r $((NOW - ($1))) +%Y%m%d%H%M.%S) $hb }
   CALLS=(); ROOT_OUT='"SleepDisabled" = Yes'; age 10;  watchdog; is "${#CALLS}" 0 fresh-heartbeat
   CALLS=(); ROOT_OUT='"SleepDisabled" = No';  age 100; watchdog; is "${#CALLS}" 0 stale-but-released
   CALLS=(); ROOT_OUT='"SleepDisabled" = Yes'; LID_OUT='"AppleClamshellState" = Yes'; age 100; watchdog
@@ -369,6 +396,9 @@ t_watchdog() {
   is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0" uc24-missing-heartbeat
   CALLS=(); ROOT_OUT=''; age 100; watchdog; is "${CALLS[1]}" "-n /usr/bin/pmset -a disablesleep 0" unreadable-counts-as-held
   grep -q 'FAILURE watchdog' $EEPY_LOG || is missing logged watchdog-logged
+  CALLS=(); held Yes; age -100; watchdog; is "${CALLS[1]}" "-n /usr/bin/pmset -a disablesleep 0" clock-jumped-back-is-stale
+  rm -f $EEPY_HOME/watchdog; watchdog; [[ -e $EEPY_HOME/watchdog ]] || is missing stamped watchdog-stamps
+  EEPY_HOME=$EEPY_HOME/new; watchdog 2>/dev/null; [[ -e $EEPY_HOME/watchdog ]] || is missing stamped stamp-creates-home
 }
 t_setup_text() {
   is "$(sudoers_text igor)" "igor ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset sleepnow" sudoers-exact
@@ -394,6 +424,8 @@ t_uninstall_refuses() {   # Review Focus 5
   wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held child-holds
   zsh $TEST_FILE child uninstall >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-while-running
   grep -q 'stop it first' $EEPY_HOME/err2 || is missing said refusal-message
+  zsh $TEST_FILE child setup >/dev/null 2>$EEPY_HOME/err2; is $? 1 setup-refuses-while-running
+  grep -q 'stop it first' $EEPY_HOME/err2 || is missing said setup-refusal-message
   kill -KILL $p; wait $p 2>/dev/null
 }
 t_setup_fixes() {   # settings.json mode, failed release, foreign link, bad merge output
@@ -401,6 +433,8 @@ t_setup_fixes() {   # settings.json mode, failed release, foreign link, bad merg
   setup >/dev/null 2>&1; is $? 0 setup-ok
   is "$(stat -f %Lp $HOME/.claude/settings.json)" 600 setup-keeps-mode
   is "$(jq -r .model $HOME/.claude/settings.json)" opus setup-keeps-settings
+  AGENT_RC=1 setup >/dev/null 2>$EEPY_HOME/err2; is $? 1 step3-fails
+  grep -q "sudoers rule .* is installed; run \"$EEPY_PATH uninstall\"" $EEPY_HOME/err2 || is missing said step3-uninstall-hint
   rm $HOME/.claude/settings.json; setup >/dev/null 2>&1
   is "$(stat -f %Lp $HOME/.claude/settings.json)" 600 setup-new-file-600
   uninstall >/dev/null 2>&1; is $? 0 uninstall-ok
@@ -433,6 +467,7 @@ for GROUP in $groups; do
     EEPY_LOG=$EEPY_HOME/log
     export HOME=$EEPY_HOME
     load_eepy
+    touch $EEPY_HOME/watchdog   # child runs refuse without a recent watchdog stamp
     FAILS=0
     $GROUP
     exit $FAILS

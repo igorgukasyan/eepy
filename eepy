@@ -10,7 +10,7 @@ DEFAULT_FLOOR=20      # battery floor, percent
 DEFAULT_UNPLUG=0      # 1 = treat "on battery" as a trigger
 DEFAULT_LOWPOWER=0    # 1 = treat Low Power Mode as a trigger
 GRACE=120             # seconds
-INTERVAL=30           # seconds between checks
+INTERVAL=30           # seconds between checks; keep well under HEARTBEAT_MAX (90 s) or the watchdog releases a healthy eepy
 
 # ---- Safety constants: do not change ----
 THERMAL_MAX=2         # OS thermal pressure "serious" or worse
@@ -22,7 +22,6 @@ HOPS=20               # process-tree hops when looking for the Claude process
 # ---- Claude Code facts (from the pre-flight probe) ----
 CLAUDE_NAME=claude                # comm of the Claude Code process
 RUNNING_STATUSES="running pending"  # background_tasks statuses that count as still running
-HOOK_FORM=exec                    # exec: {"command": path, "args": ["hook"]}; anything else: {"command": "path hook"}
 
 # ---- Paths ----
 EEPY_HOME=${EEPY_HOME:-$HOME/.eepy}
@@ -57,9 +56,15 @@ read_attended() {
   [[ $d == <1-> ]] && print 1 || print 0
 }
 
+# Prints SleepDisabled as read (normally Yes or No), or ? when unreadable.
+read_sd() {
+  local v=$(ioreg -rn IOPMrootDomain -d 1 2>/dev/null | sed -n 's/^ *"SleepDisabled" = //p')
+  print -r -- "${v:-?}"
+}
+
 # 0 only when SleepDisabled is exactly No; unreadable counts as held.
 read_held() {
-  [[ $(ioreg -rn IOPMrootDomain -d 1 2>/dev/null) == *'"SleepDisabled" = No'* ]] && print 0 || print 1
+  [[ $(read_sd) == No ]] && print 0 || print 1
 }
 
 read_os() {
@@ -142,7 +147,7 @@ log() {
 # Prints the process start time with spaces squeezed and trimmed, or nothing.
 proc_start() {
   local s
-  s=$(LC_ALL=C ps -o lstart= -p $1 2>/dev/null) || return 0
+  s=$(LC_ALL=C TZ=UTC ps -o lstart= -p $1 2>/dev/null) || return 0
   print -r -- ${(j: :)${=s}}
 }
 
@@ -235,7 +240,7 @@ scan_sessions() {
   ACTIVE=0 REPORT=""
   for f in $EEPY_HOME/sessions/*(N); do
     L=("${(@f)$(<$f 2>/dev/null)}")
-    if (( $#L != 4 )) || [[ $L[1] != (working|waiting|finished) || $L[2] != <-> || $L[3] != <-> || -z $L[4] ]]; then
+    if (( $#L != 4 )) || [[ $L[1] != (working|waiting|finished) || $L[2] != <-> || $L[3] != <-> ]]; then
       rm -f $f; continue
     fi
     st=$L[1] act=$L[2] pid=$L[3] start=$L[4]
@@ -254,45 +259,49 @@ hook() {
 }
 
 # The only two functions that change the power setting. Callers re-read read_held; they never trust the return value.
+# sudo's stderr goes to $e: if the err file cannot be opened, zsh would skip the command, so fall back to /dev/null.
 hold() {
-  local why
-  mkdir -p $EEPY_HOME
-  sudo -n /usr/bin/pmset -a disablesleep 1 2>$EEPY_HOME/err
+  local why e=$EEPY_HOME/err
+  mkdir -p $EEPY_HOME; { : >$e } 2>/dev/null || e=/dev/null
+  sudo -n /usr/bin/pmset -a disablesleep 1 2>$e
   if [[ $(read_held) == 1 ]]; then
     log "hold: disablesleep 1, read back Yes"
     return 0
   fi
-  why=$(<$EEPY_HOME/err 2>/dev/null)
-  log "FAILURE hold failed: ${why:-read back No}"
+  why=$(<$e 2>/dev/null)
+  log "FAILURE hold failed: read back $(read_sd)${why:+, $why}"
   release
   return 1
 }
 
 release() {
-  local ok=0 why
-  mkdir -p $EEPY_HOME
-  sudo -n /usr/bin/pmset -a disablesleep 0 2>$EEPY_HOME/err
+  local ok=0 why e=$EEPY_HOME/err
+  mkdir -p $EEPY_HOME; { : >$e } 2>/dev/null || e=/dev/null
+  sudo -n /usr/bin/pmset -a disablesleep 0 2>$e
   [[ $(read_held) == 0 ]] && ok=1
   if (( ok )); then
     log "release: disablesleep 0, read back No"
   else
-    why=$(<$EEPY_HOME/err 2>/dev/null)
-    log "FAILURE release failed: ${why:-read back Yes}"
+    why=$(<$e 2>/dev/null)
+    log "FAILURE release failed: read back $(read_sd)${why:+, $why}"
   fi
   if [[ $(read_attended) == 0 ]]; then
-    sudo -n /usr/bin/pmset sleepnow 2>/dev/null
-    log "sleepnow (unattended)"
+    if sudo -n /usr/bin/pmset sleepnow 2>$e; then log "sleepnow (unattended)"
+    else why=$(<$e 2>/dev/null); log "FAILURE sleepnow failed: ${why:-no error text}"
+    fi
   fi
   (( ok )) && return 0
   return 1
 }
 
 # Run by the LaunchAgent: releases when sleep is disabled and the heartbeat is stale or missing.
+# Its first act stamps $EEPY_HOME/watchdog, which run checks to know the watchdog really runs.
 watchdog() {
   local mt age=missing
+  { mkdir -p $EEPY_HOME && touch $EEPY_HOME/watchdog } 2>/dev/null
   mt=$(stat -f %m $EEPY_HOME/heartbeat 2>/dev/null)
   [[ $mt == <-> ]] && age=$(( $(now) - mt ))
-  [[ $age == missing ]] || (( age > HEARTBEAT_MAX )) || return 0
+  [[ $age == missing ]] || (( age < 0 || age > HEARTBEAT_MAX )) || return 0   # negative: the clock jumped back
   [[ $(read_held) == 1 ]] || return 0
   [[ $age == missing ]] || age="${age}s old"
   log "FAILURE watchdog: heartbeat $age, sleep was disabled; releasing"
@@ -323,9 +332,8 @@ PLIST
 # JSON on stdin, JSON on stdout. Any jq error: returns 1 with no output.
 merge_hooks() {
   local out
-  out=$(jq --arg p "$1" --arg form "$HOOK_FORM" '
-    (if $form == "exec" then {type: "command", command: $p, args: ["hook"]}
-     else {type: "command", command: ($p + " hook")} end) as $h
+  out=$(jq --arg p "$1" '
+    {type: "command", command: $p, args: ["hook"]} as $h
     | def add($ev; $m): .hooks[$ev] += [(if $m == "" then {hooks: [$h]} else {matcher: $m, hooks: [$h]} end)];
     if type != "object" then error("not an object") else . end
     | (.hooks // {}) as $old
@@ -371,6 +379,7 @@ write_settings() {
 setup_fail() {   # setup_fail <step number, 0 for preparation> <what failed>
   print -u2 "eepy setup failed at step $1: $2"
   (( $1 >= 1 && $1 <= 2 )) && print -u2 "company security tooling may have blocked this; nothing else was changed"
+  (( $1 == 3 )) && print -u2 "the sudoers rule /etc/sudoers.d/eepy is installed; run \"$EEPY_PATH uninstall\" to remove it"
   return 1
 }
 
@@ -380,6 +389,7 @@ setup() {
   local -a sets=("-a disablesleep 0" "-a disablesleep 1" "sleepnow")
   (( EUID == 0 )) && { print -u2 "eepy setup: run it as your own user, not as root; nothing was changed"; return 1 }
   mkdir -p $EEPY_HOME || { setup_fail 0 "cannot create $EEPY_HOME"; return 1 }
+  lock_free || { print -u2 "eepy is running; stop it first"; return 1 }
   sudo -v || { setup_fail 1 "sudo -v"; return 1 }
   tmp=$(mktemp) || { setup_fail 2 "cannot make a temp file"; return 1 }
   sudoers_text $USER > $tmp
@@ -488,6 +498,7 @@ check_once() {
     log "attended=$attended thermal=$th temp=${tc}°C batt=$pct% $src lpm=$lpm sessions: $REPORT"
   else
     s="attended=$attended active=$ACTIVE"
+    (( want && tripped )) && s+=" not holding: $reason"
     [[ $s != $LAST_SUMMARY ]] && log $s
     LAST_SUMMARY=$s
   fi
@@ -503,8 +514,9 @@ run() {
   sudo -k -n -l /usr/bin/pmset -a disablesleep 0 >/dev/null 2>&1 &&
     sudo -k -n -l /usr/bin/pmset -a disablesleep 1 >/dev/null 2>&1 &&
     sudo -k -n -l /usr/bin/pmset sleepnow >/dev/null 2>&1 || { print -u2 'run "eepy setup" first'; return 1 }
-  launchctl print gui/$UID/local.eepy.watchdog >/dev/null 2>&1 ||
-    { print -u2 'the eepy watchdog is not loaded; run "eepy setup"'; return 1 }
+  local t=$(now) mt=$(stat -f %m $EEPY_HOME/watchdog 2>/dev/null)   # the watchdog stamps this file every minute
+  [[ $mt == <-> ]] && (( t - mt >= 0 && t - mt <= 150 )) ||
+    { print -u2 'the eepy watchdog has not run in the last 2.5 minutes; run "eepy setup"'; return 1 }
   LOG_TTY=1
   log "start: eepy $VERSION limit=${LIMIT}s no-claude=$NOCLAUDE battery-floor=$FLOOR% unplug=$UNPLUG low-power=$LOWPOWER" \
     "grace=${GRACE}s interval=${INTERVAL}s thermal-max=$THERMAL_MAX temp-max=$TEMP_MAX cap=${CAP}s" \
@@ -512,7 +524,13 @@ run() {
   (( LIMIT > 0 )) && END=$(( $(now) + LIMIT ))
   HOLDING=$(read_held)
   (( HOLDING )) && log "FAILURE sleep was already disabled at start; taking it over"
-  while check_once; do sleep $INTERVAL & wait $!; done
+  local i
+  while check_once; do   # 1 s sleeps: a session that starts while idle is checked at once, before the lid can close
+    for (( i = 0; i < INTERVAL; i++ )); do
+      sleep 1 & wait $!
+      (( HOLDING || ACTIVE )) || [[ ! $EEPY_HOME/sessions -nt $EEPY_HOME/heartbeat ]] || break
+    done
+  done
   return 0
 }
 
@@ -555,7 +573,6 @@ main() {
     watchdog) watchdog ;;
     setup) setup || rc=1 ;;
     uninstall) uninstall || rc=1 ;;
-    *) print -u2 "eepy $CMD: not built yet"; rc=1 ;;
   esac
   exit $rc
 }
