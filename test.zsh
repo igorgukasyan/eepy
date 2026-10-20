@@ -256,6 +256,84 @@ t_hold_release() {
   is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 1|-n /usr/bin/pmset -a disablesleep 0" hold-failure-releases
 }
 
+loop_reset() { HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 NOCLAUDE=0 STOPPING= SUDO_RC=0 CALLS=()
+  ROOT_OUT='"SleepDisabled" = No'; OS_OUT='0 0'; DISPLAYS=0; PS_LSTART=(4000 'L1  ')
+  mkdir -p $EEPY_HOME/sessions; rm -f $EEPY_HOME/sessions/*(N) }
+lid() { LID_OUT="\"AppleClamshellState\" = $1" }   # lid Yes = closed
+sess() { print -rl -- $1 ${2:-$NOW} 4000 L1 > $EEPY_HOME/sessions/a }
+held() { ROOT_OUT="\"SleepDisabled\" = $1" }
+t_all_day() {   # uc8, uc10, uc1, uc26
+  loop_reset; lid No
+  NOW=1000; check_once; is $HOLDING 0 morning-idle
+  NOW=1030; sess working; check_once; is $HOLDING 1 working-at-desk-holds
+  NOW=1060; lid Yes; check_once; is $HOLDING 1 lid-closed-keeps-holding
+  NOW=1090; sess finished 1060; check_once; is $HOLDING 1 grace
+  NOW=1170; check_once; is $HOLDING 1 still-grace       # grace counts from the last check that saw it active (1060)
+  NOW=1180; check_once; is $HOLDING 0 released-after-grace
+  is "${CALLS[-1]}" "-n /usr/bin/pmset sleepnow" sleeps-when-unattended
+  NOW=1240; sess working; check_once; is $HOLDING 0 uc26-dark-wake-never-arms
+  NOW=1270; lid No; check_once; is $HOLDING 1 lid-open-arms-again
+}
+t_noclaude()     { loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once; is $HOLDING 1 uc12-holds-without-sessions }
+t_time_limit()   { loop_reset; lid Yes; NOCLAUDE=1; HOLDING=1; held Yes; END=2000; NOW=2000
+  check_once; is $? 1 uc11-stops; grep -q 'time limit reached' $EEPY_LOG || is missing logged uc11-logged }
+t_stop_trigger() { loop_reset; lid Yes; NOW=1000; sess working; HOLDING=1; held Yes; OS_OUT='2 0'
+  check_once; is $? 1 uc17-stops
+  is "${(j:|:)CALLS}" "-n /usr/bin/pmset -a disablesleep 0|-n /usr/bin/pmset sleepnow" uc17-release-and-sleep }
+t_stop_retry()   { loop_reset; lid Yes; NOW=1000; sess working; HOLDING=1; held Yes; OS_OUT='2 0'; SUDO_RC=1
+  check_once; is $? 0 uc27-failed-stop-keeps-running
+  SUDO_RC=0; NOW=1030; check_once; is $? 1 uc27-stop-retried }
+t_pause()        { loop_reset; lid No; NOW=1000; sess working; HOLDING=1; held Yes; OS_OUT='2 0'
+  check_once; is "$? $HOLDING" "0 0" uc18-pauses
+  [[ "$CALLS" == *sleepnow* ]] && is slept "not slept" uc18-never-sleeps-attended
+  NOW=1030; sess working; OS_OUT='0 0'; check_once; is $HOLDING 1 uc18-resumes-when-cool }
+t_release_retry() { loop_reset; lid Yes; HOLDING=1; held Yes; NOW=1000; SUDO_RC=1   # no sessions, not wanted
+  check_once; is $HOLDING 1 uc27-still-held-after-failure
+  SUDO_RC=0; NOW=1030; check_once; is $HOLDING 0 uc27-retried
+  is "${#${(@M)CALLS:#*disablesleep 0}}" 2 uc27-two-release-attempts }
+t_reconcile()    { loop_reset; lid Yes; NOW=1000; sess working; HOLDING=1; held No
+  check_once; is $HOLDING 0 reconciled-down
+  [[ "$CALLS" == *'disablesleep 1'* ]] && is held "not held" uc26-no-rehold-in-bag
+  grep -q 'FAILURE expected holding=1' $EEPY_LOG || is missing logged reconcile-logged }
+t_reconcile_up() { loop_reset; lid No; NOW=1000; HOLDING=0; held Yes   # uc28 stray hold, nothing wanted
+  check_once; is $HOLDING 0 stray-hold-released
+  [[ "$CALLS" == *'disablesleep 0'* ]] || is missing released stray-hold-release-call }
+t_gap()          { loop_reset; lid Yes; sess working 1000; HOLDING=1; held Yes; LAST_CHECK=1000; NOW=1091
+  check_once; is $? 1 uc25-gap-stops; grep -q 'FAILURE gap' $EEPY_LOG || is missing logged uc25-logged }
+t_gap_after_watchdog() { loop_reset; lid Yes; sess working 1000; HOLDING=1; held No; LAST_CHECK=1000; NOW=1200
+  check_once; is $? 1 uc25-stops-even-if-watchdog-released }
+t_heartbeat()    { loop_reset; lid No; NOW=1000; check_once; [[ -e $EEPY_HOME/heartbeat ]] || is missing written heartbeat }
+wait_for() { local i; for i in {1..50}; do grep -q "$1" $2 2>/dev/null && return 0; sleep 0.1; done; return 1 }
+t_single_instance() {   # Review Focus 5
+  zsh $TEST_FILE child --no-claude >/dev/null 2>&1 &; local p=$!
+  wait_for 'disablesleep 1' $EEPY_HOME/calls || is no first-held first-instance-holds
+  zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 second-refused
+  grep -q 'already running' $EEPY_HOME/err2 || is missing said already-running-message
+  kill -KILL $p; wait $p 2>/dev/null
+}
+t_signal_release() {   # Review Focus 1
+  zsh $TEST_FILE child --no-claude | true &
+  wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held child-holds
+  pkill -HUP -f "$TEST_FILE child"; wait_for 'stopped by signal' $EEPY_LOG || is missing logged hup-logged
+  grep -q 'disablesleep 0' $EEPY_HOME/calls || is missing released hup-releases
+  pkill -KILL -f "$TEST_FILE child"
+}
+t_signal_exits() {   # a stopped eepy must not linger in `wait` (holding the lock) until the sleep ends
+  zsh $TEST_FILE child --no-claude >/dev/null 2>&1 &; local p=$! i
+  wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held child-holds
+  kill -TERM $p
+  for i in {1..20}; do kill -0 $p 2>/dev/null || break; sleep 0.1; done
+  kill -0 $p 2>/dev/null && { is lingering exited exits-promptly; kill -KILL $p }
+  wait $p 2>/dev/null
+}
+t_start_checks() {
+  SUDO_L_RC=1 zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-sudo-rule
+  grep -q 'eepy setup' $EEPY_HOME/err2 || is missing said sudo-message
+  AGENT_RC=1 zsh $TEST_FILE child --no-claude >/dev/null 2>$EEPY_HOME/err2; is $? 1 refuses-without-watchdog
+  grep -q 'watchdog' $EEPY_HOME/err2 || is missing said watchdog-message
+  [[ -s $EEPY_HOME/calls ]] && is called "nothing called" refusals-touch-nothing
+}
+
 # ---- runner ----
 # Abort before any group if the stubs cannot be loaded (never fall through to real sudo).
 ( export EEPY_HOME=$(mktemp -d) EEPY_LOG=/dev/null; load_eepy ) >/dev/null 2>&1

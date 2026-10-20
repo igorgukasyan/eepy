@@ -25,6 +25,9 @@ RUNNING_STATUSES="running pending"  # background_tasks statuses that count as st
 EEPY_HOME=${EEPY_HOME:-$HOME/.eepy}
 EEPY_LOG=${EEPY_LOG:-$HOME/Library/Logs/eepy.log}
 
+# ---- Loop state (epoch seconds; END=0 means no limit) ----
+HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT=
+
 # ---- Readers: thin wrappers over macOS commands ----
 read_lid() {
   local s=$(ioreg -r -k AppleClamshellState -d 1 2>/dev/null)
@@ -127,7 +130,8 @@ log() {
   local line="$(date '+%F %T') $*"
   mkdir -p ${EEPY_LOG:h}
   print -r -- "$line" >> $EEPY_LOG
-  (( ${LOG_TTY:-0} == 1 )) && { print -r -- "$line" 2>/dev/null || true; }
+  # -u1 writes through a throwaway stream: a dead terminal leaves nothing buffered for later builtins to re-report.
+  (( ${LOG_TTY:-0} == 1 )) && { print -u1 -r -- "$line" 2>/dev/null || true; }
   return 0
 }
 
@@ -279,6 +283,87 @@ release() {
   return 1
 }
 
+# One pass of the spec's Behaviour. Returns 0 to carry on, 1 once eepy has stopped and released.
+check_once() {
+  local t prev elapsed gap=0 want=0 timeup=0 tripped=0 attended th lpm temp pct src reason tc s
+  t=$(now)
+  touch $EEPY_HOME/heartbeat
+  prev=$HOLDING; HOLDING=$(read_held)
+  [[ $prev != $HOLDING ]] && log "FAILURE expected holding=$prev, SleepDisabled says $HOLDING; following SleepDisabled"
+  if [[ -n $STOPPING ]]; then
+    release; HOLDING=$(read_held)
+    (( HOLDING )) && return 0
+    return 1
+  fi
+  elapsed=$(( t - LAST_CHECK ))
+  (( prev == 1 && LAST_CHECK > 0 && elapsed > 3 * INTERVAL )) && gap=1
+  LAST_CHECK=$t
+  attended=$(read_attended)
+  read -r th lpm <<< $(read_os)
+  temp=$(read_temp)
+  read -r pct src <<< $(read_batt)
+  (( NOCLAUDE )) || scan_sessions $t
+  if (( NOCLAUDE )); then want=1
+  elif (( ACTIVE > 0 )); then want=1 LAST_ACTIVE=$t
+  elif (( LAST_ACTIVE > 0 && t - LAST_ACTIVE < GRACE )); then want=1
+  fi
+  (( END > 0 && t >= END )) && timeup=1
+  reason=$(trigger $th $temp $pct $src $lpm)
+  [[ -n $reason ]] && tripped=1
+  case $(decide $HOLDING $attended $want $tripped $gap $timeup) in
+    hold) hold; HOLDING=$(read_held) ;;
+    release) log "released: no active sessions"; release; HOLDING=$(read_held) ;;
+    pause) log "$reason (attended: released, not sleeping)"; release; HOLDING=$(read_held) ;;
+    stop)
+      if (( timeup )); then STOPPING="time limit reached"
+      elif (( gap )); then STOPPING="FAILURE gap: no check for ${elapsed}s while holding"
+      else STOPPING=$reason
+      fi
+      log $STOPPING; release; HOLDING=$(read_held)
+      (( HOLDING )) && return 0
+      return 1 ;;
+  esac
+  if (( HOLDING )); then
+    tc='?'; [[ $temp == <-> ]] && printf -v tc '%d.%02d' $((temp / 100)) $((temp % 100))
+    log "attended=$attended thermal=$th temp=${tc}°C batt=$pct% $src lpm=$lpm sessions: $REPORT"
+  else
+    s="attended=$attended active=$ACTIVE"
+    [[ $s != $LAST_SUMMARY ]] && log $s
+    LAST_SUMMARY=$s
+  fi
+  return 0
+}
+
+run() {
+  trap on_signal INT TERM HUP
+  trap '' TSTP PIPE
+  local lockfd
+  mkdir -p $EEPY_HOME/sessions && : >> $EEPY_HOME/lock
+  zsystem flock -t 0 -f lockfd $EEPY_HOME/lock 2>/dev/null || { print -u2 "eepy is already running"; return 1 }
+  sudo -k -n -l /usr/bin/pmset -a disablesleep 0 >/dev/null 2>&1 &&
+    sudo -k -n -l /usr/bin/pmset -a disablesleep 1 >/dev/null 2>&1 &&
+    sudo -k -n -l /usr/bin/pmset sleepnow >/dev/null 2>&1 || { print -u2 'run "eepy setup" first'; return 1 }
+  launchctl print gui/$UID/local.eepy.watchdog >/dev/null 2>&1 ||
+    { print -u2 'the eepy watchdog is not loaded; run "eepy setup"'; return 1 }
+  LOG_TTY=1
+  log "start: limit=${LIMIT}s no-claude=$NOCLAUDE battery-floor=$FLOOR% unplug=$UNPLUG low-power=$LOWPOWER" \
+    "grace=${GRACE}s interval=${INTERVAL}s thermal-max=$THERMAL_MAX temp-max=$TEMP_MAX cap=${CAP}s" \
+    "heartbeat-max=${HEARTBEAT_MAX}s hops=$HOPS"
+  (( LIMIT > 0 )) && END=$(( $(now) + LIMIT ))
+  HOLDING=$(read_held)
+  (( HOLDING )) && log "FAILURE sleep was already disabled at start; taking it over"
+  while check_once; do sleep $INTERVAL & wait $!; done
+  return 0
+}
+
+on_signal() {
+  trap '' INT TERM HUP
+  release
+  log "stopped by signal"
+  kill %sleep 2>/dev/null   # zsh defers exit inside a function, and `wait` would sit out the whole sleep
+  exit 0
+}
+
 parse_args() {
   CMD=run LIMIT=0 NOCLAUDE=0
   FLOOR=$DEFAULT_FLOOR UNPLUG=$DEFAULT_UNPLUG LOWPOWER=$DEFAULT_LOWPOWER
@@ -305,6 +390,7 @@ main() {
   local rc=0
   case $CMD in
     hook) hook ;;  # always 0, never prints
+    run) run || rc=1 ;;
     *) print -u2 "eepy $CMD: not built yet"; rc=1 ;;
   esac
   exit $rc
