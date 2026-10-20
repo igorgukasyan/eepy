@@ -136,7 +136,7 @@ The real `SleepDisabled` is the truth about holding. Every check reads it first 
 
 On Ctrl-C, terminal close (HUP) or TERM: ignore further signals, release, then log, then exit. The traps are the first thing eepy sets up, before any output. Printing to a closed terminal must not kill eepy before it has released.
 
-Only one eepy runs at a time (`zsystem flock` on a lock file, freed automatically when the process dies). A second one refuses and says why. eepy also refuses to start unless the sudo rule works without cached credentials (`sudo -k -n -l` for each of the three commands) and the watchdog LaunchAgent is loaded.
+Only one eepy runs at a time (`zsystem flock` on a lock file, freed automatically when the process dies). A second one refuses and says why. eepy also refuses to start unless the sudo rule works without cached credentials (`sudo -k -n -l` for each of the three commands) and the watchdog has actually run in the last 2.5 minutes (it touches a stamp file each run).
 
 ## Use cases
 
@@ -214,7 +214,7 @@ eepy reads the files every check. A file that can't be parsed counts as finished
 
 ## Watchdog
 
-A **user** LaunchAgent (`RunAtLoad` plus every 60 seconds) runs `eepy watchdog`. If eepy's heartbeat file is missing or more than 90 seconds old, and `SleepDisabled` reads as anything other than a literal `No`, it runs the shared release routine (release, read back, `sleepnow` if unattended) and logs what it found as FAILURE. It uses only `ioreg`, `stat` and `sudo -n pmset`.
+A **user** LaunchAgent (`RunAtLoad` plus every 60 seconds) runs `eepy watchdog`. If eepy's heartbeat file is missing or more than 90 seconds old, and `SleepDisabled` reads as anything other than a literal `No`, it runs the shared release routine (release, read back, `sleepnow` if unattended) and logs what it found as FAILURE. It touches `$EEPY_HOME/watchdog` on every run (eepy checks this at start) and otherwise uses only `ioreg`, `stat` and `sudo -n pmset`. A negative heartbeat age (clock jumped back) counts as stale.
 
 It runs as the owner, not root, so it can't be used to gain privilege, and it writes to the owner's log file. With FileVault on, nothing runs before the owner unlocks after a reboot anyway, and the agent's `RunAtLoad` covers the first moment after login.
 
@@ -290,7 +290,15 @@ Changed after the plan reviews:
 
 - **Holding follows the real `SleepDisabled` in both directions**, every check and at start, so a failed release is retried and a stray hold is cleaned up. A failed stop keeps retrying instead of exiting.
 - **`sleepnow` runs whenever unattended**, even if the release read-back failed.
-- **eepy refuses to start** unless the sudo rule works without cached credentials and the watchdog is loaded.
+- **eepy refuses to start** unless the sudo rule works without cached credentials and the watchdog has run in the last 2.5 minutes.
+
+Changed after the final review:
+
+- **The watchdog proves it runs** by touching a stamp file; eepy checks the stamp at start instead of asking launchd whether the agent is loaded.
+- **A failed error-file redirect can never skip a `pmset` call.**
+- **The log says why eepy is not holding** when a session is working but a trigger or unreadable sensor is in the way.
+- **A new prompt is noticed within about a second** while eepy is idle, so "type a prompt, close the lid" works.
+- **Process start times are compared in UTC**, so a time-zone change can't make live sessions look dead.
 - **Signal handling comes first** and ignores repeat signals while releasing.
 - **`uninstall` refuses while eepy runs**, and removes the watchdog last.
 - **Quieter logging while released:** only attended state and session states.
