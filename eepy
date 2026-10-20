@@ -335,6 +335,7 @@ merge_hooks() {
     | add("PreToolUse"; "AskUserQuestion|ExitPlanMode") | add("Stop"; "") | add("StopFailure"; "")
     | add("Notification"; "permission_prompt|elicitation_dialog|idle_prompt") | add("SessionEnd"; "")
   ' 2>/dev/null) || return 1
+  [[ -n ${out//[[:space:]]/} ]] || return 1
   print -r -- $out
 }
 
@@ -349,6 +350,7 @@ unmerge_hooks() {
         | if (.hooks | length) == 0 then del(.hooks) else . end
       else . end
   ' 2>/dev/null) || return 1
+  [[ -n ${out//[[:space:]]/} ]] || return 1
   print -r -- $out
 }
 
@@ -359,9 +361,16 @@ lock_free() {
   ( zsystem flock -t 0 $EEPY_HOME/lock ) 2>/dev/null
 }
 
-setup_fail() {   # setup_fail <step number> <what failed>
+# write_settings <file> <content>: temp file + mv, keeping the original's mode (600 for a new file).
+write_settings() {
+  local tmp=$1.eepy-tmp.$$
+  if [[ -e $1 ]]; then cp -p $1 $tmp || return 1; else ( umask 077; : > $tmp ) || return 1; fi
+  print -r -- $2 > $tmp && mv -f $tmp $1 || { rm -f $tmp; return 1 }
+}
+
+setup_fail() {   # setup_fail <step number, 0 for preparation> <what failed>
   print -u2 "eepy setup failed at step $1: $2"
-  (( $1 <= 2 )) && print -u2 "company security tooling may have blocked this; nothing else was changed"
+  (( $1 >= 1 && $1 <= 2 )) && print -u2 "company security tooling may have blocked this; nothing else was changed"
   return 1
 }
 
@@ -369,7 +378,8 @@ setup() {
   local me=$EEPY_PATH tmp args settings=$HOME/.claude/settings.json
   local plist=$HOME/Library/LaunchAgents/local.eepy.watchdog.plist
   local -a sets=("-a disablesleep 0" "-a disablesleep 1" "sleepnow")
-  mkdir -p $EEPY_HOME || { setup_fail 1 "cannot create $EEPY_HOME"; return 1 }
+  (( EUID == 0 )) && { print -u2 "eepy setup: run it as your own user, not as root; nothing was changed"; return 1 }
+  mkdir -p $EEPY_HOME || { setup_fail 0 "cannot create $EEPY_HOME"; return 1 }
   sudo -v || { setup_fail 1 "sudo -v"; return 1 }
   tmp=$(mktemp) || { setup_fail 2 "cannot make a temp file"; return 1 }
   sudoers_text $USER > $tmp
@@ -394,8 +404,7 @@ setup() {
     backup="(none, the file did not exist)"
   fi
   merged=$(print -r -- $json | merge_hooks $me) || { setup_fail 5 "settings.json is not valid JSON; it was not changed"; return 1 }
-  tmp=$settings.eepy-tmp.$$
-  print -r -- $merged > $tmp && mv -f $tmp $settings || { rm -f $tmp; setup_fail 5 "writing settings.json"; return 1 }
+  write_settings $settings $merged || { setup_fail 5 "writing settings.json"; return 1 }
   print "eepy is set up:
   sudoers rule   /etc/sudoers.d/eepy
   watchdog       $plist
@@ -407,17 +416,21 @@ Start a new Claude Code session for the hooks to take effect, then run: eepy"
 uninstall() {
   local me=$EEPY_PATH tmp json out backup settings=$HOME/.claude/settings.json
   local plist=$HOME/Library/LaunchAgents/local.eepy.watchdog.plist
+  (( EUID == 0 )) && { print -u2 "eepy uninstall: run it as your own user, not as root; nothing was changed"; return 1 }
   lock_free || { print -u2 "eepy is running; stop it first"; return 1 }
   sudo -v || { print -u2 "eepy uninstall: sudo -v failed; nothing was changed"; return 1 }
-  [[ $(read_held) == 1 ]] && release
+  if [[ $(read_held) == 1 ]]; then
+    release || { print -u2 "eepy uninstall: could not re-enable sleep (see $EEPY_LOG); stopped"; return 1 }
+  fi
   if [[ -e $settings ]]; then
     backup=$settings.eepy-backup-$(now)
     cp $settings $backup || { print -u2 "eepy uninstall: cannot back up settings.json; stopped"; return 1 }
     out=$(unmerge_hooks $me < $settings) || { print -u2 "eepy uninstall: settings.json is not valid JSON; stopped"; return 1 }
-    tmp=$settings.eepy-tmp.$$
-    print -r -- $out > $tmp && mv -f $tmp $settings || { rm -f $tmp; print -u2 "eepy uninstall: cannot write settings.json; stopped"; return 1 }
+    write_settings $settings $out || { print -u2 "eepy uninstall: cannot write settings.json; stopped"; return 1 }
   fi
-  rm -f $HOME/.local/bin/eepy
+  if [[ -L $HOME/.local/bin/eepy && $HOME/.local/bin/eepy -ef $me ]]; then rm -f $HOME/.local/bin/eepy
+  elif [[ -e $HOME/.local/bin/eepy || -L $HOME/.local/bin/eepy ]]; then print "left ~/.local/bin/eepy alone: it is not the link to $me"
+  fi
   sudo rm -f /etc/sudoers.d/eepy || { print -u2 "eepy uninstall: cannot remove /etc/sudoers.d/eepy; stopped"; return 1 }
   launchctl bootout gui/$UID/local.eepy.watchdog >/dev/null 2>&1
   rm -f $plist

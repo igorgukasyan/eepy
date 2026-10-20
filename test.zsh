@@ -396,6 +396,25 @@ t_uninstall_refuses() {   # Review Focus 5
   grep -q 'stop it first' $EEPY_HOME/err2 || is missing said refusal-message
   kill -KILL $p; wait $p 2>/dev/null
 }
+t_setup_fixes() {   # settings.json mode, failed release, foreign link, bad merge output
+  HOME=$(mktemp -d); mkdir -p $HOME/.claude; print -r '{"model":"opus"}' > $HOME/.claude/settings.json; chmod 600 $HOME/.claude/settings.json
+  setup >/dev/null 2>&1; is $? 0 setup-ok
+  is "$(stat -f %Lp $HOME/.claude/settings.json)" 600 setup-keeps-mode
+  is "$(jq -r .model $HOME/.claude/settings.json)" opus setup-keeps-settings
+  rm $HOME/.claude/settings.json; setup >/dev/null 2>&1
+  is "$(stat -f %Lp $HOME/.claude/settings.json)" 600 setup-new-file-600
+  uninstall >/dev/null 2>&1; is $? 0 uninstall-ok
+  is "$(stat -f %Lp $HOME/.claude/settings.json)" 600 uninstall-keeps-mode
+  [[ -e $HOME/.local/bin/eepy ]] && is present removed own-link-removed
+  mkdir -p $HOME/.local/bin $EEPY_HOME; : > $HOME/.local/bin/eepy
+  uninstall 2>&1 | grep -q 'left ~/.local/bin/eepy alone' || is missing said foreign-link-kept
+  [[ -e $HOME/.local/bin/eepy ]] || is gone kept foreign-link-kept-file
+  mkdir -p $EEPY_HOME; held Yes; release() { return 1 }
+  uninstall 2>$EEPY_HOME/err2; is $? 1 failed-release-stops
+  grep -q 'could not re-enable sleep' $EEPY_HOME/err2 || is missing said release-message
+  local out; out=$(print '   ' | merge_hooks /x); is "$? $out" "1 " blank-output-fails
+  out=$(print '[]' | unmerge_hooks /x); is "$? $out" "1 " non-object-fails
+}
 t_runner_unknown_group() { zsh $TEST_FILE t_no_such_group >/dev/null 2>&1 && is passed failed unknown-group-fails }
 
 # ---- runner ----
@@ -412,6 +431,7 @@ for GROUP in $groups; do
   (
     export EEPY_HOME=$(mktemp -d) EEPY_LOG
     EEPY_LOG=$EEPY_HOME/log
+    export HOME=$EEPY_HOME
     load_eepy
     FAILS=0
     $GROUP
