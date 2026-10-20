@@ -59,6 +59,7 @@ default_state() {
 load_eepy() {
   source $EEPY_SRC
   define_stubs
+  now() { print -r -- $NOW }
   (( $+functions[sudo] )) || { print -u2 "test.zsh: sudo stub missing, aborting"; exit 99 }
   default_state
 }
@@ -102,6 +103,10 @@ t_proc_start() {
   is "$(proc_start 4000)" 'Tue Oct 20 13:33:01 2026' trims-trailing
   is "$(proc_start 4001)" 'Tue Oct 20 13:33:01 2026' squeezes
   is "$(proc_start 4999)" '' unknown-pid
+}
+t_now_real() {
+  local n; n=$(zsh -fc "source $EEPY_SRC; now")
+  [[ $n == <1000000000-9999999999> ]] || is "$n" "a 10-digit epoch" real-now
 }
 
 # ---- runner ----

@@ -1,6 +1,8 @@
 #!/bin/zsh
 # eepy: keep a MacBook awake with the lid closed while Claude Code works, then sleep it safely.
 
+zmodload zsh/datetime zsh/system
+
 # ---- Defaults (owner-editable) ----
 DEFAULT_FLOOR=20      # battery floor, percent
 DEFAULT_UNPLUG=0      # 1 = treat "on battery" as a trigger
