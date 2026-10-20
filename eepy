@@ -21,6 +21,56 @@ HOPS=20               # process-tree hops when looking for the Claude process
 EEPY_HOME=${EEPY_HOME:-$HOME/.eepy}
 EEPY_LOG=${EEPY_LOG:-$HOME/Library/Logs/eepy.log}
 
+# ---- Readers: thin wrappers over macOS commands ----
+read_lid() {
+  local s=$(ioreg -r -k AppleClamshellState -d 1 2>/dev/null)
+  case $s in
+    *'"AppleClamshellState" = Yes'*) print closed ;;
+    *'"AppleClamshellState" = No'*) print open ;;
+    *) print '?' ;;
+  esac
+}
+
+# Counts non-internal displays; never uses the IOMobileFramebufferShim flag (it reports 2 with no monitor).
+read_displays() {
+  local j total internal
+  j=$(system_profiler SPDisplaysDataType -json 2>/dev/null) && [[ $j == *SPDisplaysDataType* ]] || { print '?'; return 0 }
+  total=$(print -r -- $j | grep -c '"_spdisplays_displayID"')
+  internal=$(print -r -- $j | grep -c '"spdisplays_connection_type" : "spdisplays_internal"')
+  print $(( total - internal ))
+}
+
+read_attended() {
+  local d=$(read_displays)
+  [[ $(read_lid) == open ]] && { print 1; return 0 }
+  [[ $d == <1-> ]] && print 1 || print 0
+}
+
+# 0 only when SleepDisabled is exactly No; unreadable counts as held.
+read_held() {
+  [[ $(ioreg -rn IOPMrootDomain -d 1 2>/dev/null) == *'"SleepDisabled" = No'* ]] && print 0 || print 1
+}
+
+read_os() {
+  local s=$(osascript -l JavaScript -e 'var p=$.NSProcessInfo.processInfo; p.thermalState+" "+(p.isLowPowerModeEnabled?1:0)' 2>/dev/null)
+  [[ $s == <->\ <0-1> ]] && print -r -- $s || print '? ?'
+}
+
+read_temp() {
+  local t=$(ioreg -rn AppleSmartBattery 2>/dev/null | sed -n 's/^ *"Temperature" = \([0-9][0-9]*\) *$/\1/p' | head -1)
+  print -r -- "${t:-?}"
+}
+
+read_batt() {
+  local s=$(pmset -g batt 2>/dev/null) pct src
+  [[ $s =~ '([0-9]+)%' ]] && pct=$match[1]
+  case $s in
+    *"'AC Power'"*) src=ac ;;
+    *"'Battery Power'"*) src=battery ;;
+  esac
+  [[ -n $pct && -n $src ]] && print "$pct $src" || print '? ?'
+}
+
 usage() {
   cat <<'USAGE'
 Commands:

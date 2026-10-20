@@ -108,6 +108,29 @@ t_now_real() {
   local n; n=$(zsh -fc "source $EEPY_SRC; now")
   [[ $n == <1000000000-9999999999> ]] || is "$n" "a 10-digit epoch" real-now
 }
+t_readers() {
+  local closed='    "AppleClamshellState" = Yes' open='    "AppleClamshellState" = No'
+  LID_OUT=$open;   DISPLAYS=0;   is "$(read_attended)" 1 lid-open
+  LID_OUT=$closed; DISPLAYS=0;   is "$(read_attended)" 0 lid-closed
+  LID_OUT=$closed; DISPLAYS=1;   is "$(read_attended)" 1 uc14-closed-with-monitor
+  LID_OUT='';      DISPLAYS=0;   is "$(read_attended)" 0 uc22-lid-unreadable
+  LID_OUT='';      DISPLAYS=1;   is "$(read_attended)" 1 lid-unreadable-with-monitor
+  LID_OUT=$closed; DISPLAYS='?'; is "$(read_attended)" 0 display-unreadable-lid-closed
+  LID_OUT=$open;   DISPLAYS='?'; is "$(read_attended)" 1 uc13-open-mac-never-unattended
+  ROOT_OUT='      "SleepDisabled" = No';  is "$(read_held)" 0 released
+  ROOT_OUT='      "SleepDisabled" = Yes'; is "$(read_held)" 1 held
+  ROOT_OUT='';                            is "$(read_held)" 1 unreadable-counts-as-held
+  BATT_OUT=$'      "Temperature" = 3038\n      "BatteryData" = {"AverageTemperature"=2900,"MaximumTemperature"=40}'
+  is "$(read_temp)" 3038 exact-temperature-key
+  BATT_OUT='      "VirtualTemperature" = 2909'; is "$(read_temp)" '?' temperature-missing
+  PMSET_BATT=$'Now drawing from \'Battery Power\'\n -InternalBattery-0 (id=1)\t57%; discharging; 3:53 remaining present: true'
+  is "$(read_batt)" "57 battery" on-battery
+  PMSET_BATT=$'Now drawing from \'AC Power\'\n -InternalBattery-0 (id=1)\t80%; charging; 0:40 remaining present: true'
+  is "$(read_batt)" "80 ac" on-mains
+  PMSET_BATT='';  is "$(read_batt)" "? ?" battery-unreadable
+  OS_OUT='2 1';   is "$(read_os)" "2 1" os
+  OS_OUT='';      is "$(read_os)" "? ?" os-unreadable
+}
 
 # ---- runner ----
 # Abort before any group if the stubs cannot be loaded (never fall through to real sudo).
