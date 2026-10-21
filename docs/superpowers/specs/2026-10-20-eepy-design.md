@@ -107,7 +107,7 @@ eepy --low-power      also treat Low Power Mode as a trigger
 eepy setup            one-time install
 eepy uninstall        undo everything setup did
 eepy hook             internal: called by Claude Code hooks
-eepy watchdog         internal: called by the LaunchAgent every minute
+eepy watchdog         internal: called by the watchdog job every minute
 ```
 
 Flags combine. The time limit always means "for the next N", counted from when eepy starts. eepy runs in the foreground of the terminal it was started in and prints its log lines there. Ctrl-Z is ignored.
@@ -214,9 +214,9 @@ eepy reads the files every check. A file that can't be parsed counts as finished
 
 ## Watchdog
 
-A **user** LaunchAgent (`RunAtLoad` plus every 60 seconds) runs `eepy watchdog`. If eepy's heartbeat file is missing or more than 90 seconds old, and `SleepDisabled` reads as anything other than a literal `No`, it runs the shared release routine (release, read back, `sleepnow` if unattended) and logs what it found as FAILURE. It touches `$EEPY_HOME/watchdog` on every run (eepy checks this at start) and otherwise uses only `ioreg`, `stat` and `sudo -n pmset`. A negative heartbeat age (clock jumped back) counts as stale.
+A **system LaunchDaemon that runs as the owner** (`UserName` set to the owner; `RunAtLoad` plus every 60 seconds) runs `eepy watchdog`. A user LaunchAgent does not work on this Mac: on 2026-10-21 launchd never ran its timed job (`pending spawn, domain in on-demand-only mode` for the owner's `gui/501` domain, the same for VS Code's updater), while timed jobs in the system domain ran normally. If eepy's heartbeat file is missing or more than 90 seconds old, and `SleepDisabled` reads as anything other than a literal `No`, it runs the shared release routine (release, read back, `sleepnow` if unattended) and logs what it found as FAILURE. It touches `$EEPY_HOME/watchdog` on every run (eepy checks this at start) and otherwise uses only `ioreg`, `stat` and `sudo -n pmset`. A negative heartbeat age (clock jumped back) counts as stale.
 
-It runs as the owner, not root, so it can't be used to gain privilege, and it writes to the owner's log file. With FileVault on, nothing runs before the owner unlocks after a reboot anyway, and the agent's `RunAtLoad` covers the first moment after login.
+It runs as the owner, not root, so it can't be used to gain privilege (only its plist is root-owned, in `/Library/LaunchDaemons`), and it writes to the owner's log file using the owner's sudo rule. Because it lives in the system domain, it runs whether or not anyone is logged in, so its `RunAtLoad` also covers the first moment after a reboot. Its stdout and stderr go to `/dev/null`; it reports through the eepy log.
 
 ## Logging
 
@@ -231,11 +231,11 @@ One plain-text log at `~/Library/Logs/eepy.log`. eepy also prints each line to i
 
 ## One-time setup (`eepy setup`) and `eepy uninstall`
 
-`setup` first checks that a sudoers rule and a LaunchAgent can be installed on this managed Mac. If security tooling blocks either, it stops and says so. It asks for the password once, is safe to run again, and does four things:
+`setup` first checks that a sudoers rule and the watchdog job can be installed on this managed Mac. If security tooling blocks either, it stops and says so. It asks for the password once, is safe to run again, and does four things:
 
 1. Links `eepy` into `~/.local/bin`.
 2. Writes a sudoers rule allowing the owner, without a password, exactly `/usr/bin/pmset -a disablesleep 0`, `/usr/bin/pmset -a disablesleep 1` and `/usr/bin/pmset sleepnow`. It checks a temp copy with `visudo -cf`, then installs it with `install -m 440 -o root -g wheel` to `/etc/sudoers.d/eepy`. A broken sudoers file can lock out sudo, so it never writes there directly.
-3. Installs and loads the user LaunchAgent for the watchdog.
+3. Installs the watchdog plist as root-owned (`install -m 644 -o root -g wheel`) at `/Library/LaunchDaemons/local.eepy.watchdog.plist` and loads it into the system domain. It also removes the old user LaunchAgent (`~/Library/LaunchAgents/local.eepy.watchdog.plist`) if an earlier version installed one.
 4. Merges the hooks into `~/.claude/settings.json`. It backs the file up first, aborts without writing on any `jq` error, keeps every existing setting and hook, and adds no duplicates.
 
 eepy always calls `sudo -n`, so it never prompts mid-run. At start it checks the rule with `sudo -k -n -l` for all three commands, so cached credentials can't hide a missing rule, and refuses to run if not. Setup confirms the rule the same way.
@@ -299,6 +299,10 @@ Changed after the final review:
 - **The log says why eepy is not holding** when a session is working but a trigger or unreadable sensor is in the way.
 - **A new prompt is noticed within about a second** while eepy is idle, so "type a prompt, close the lid" works.
 - **Process start times are compared in UTC**, so a time-zone change can't make live sessions look dead.
+
+Changed during the owner session (2026-10-21):
+
+- **The watchdog moved from a user LaunchAgent to a system LaunchDaemon that runs as the owner.** On this Mac launchd never runs timed jobs in the owner's GUI domain (on-demand-only mode). The owner chose a system-wide watchdog over a watchdog started by eepy, because only a system-wide job also covers a reboot.
 - **Signal handling comes first** and ignores repeat signals while releasing.
 - **`uninstall` refuses while eepy runs**, and removes the watchdog last.
 - **Quieter logging while released:** only attended state and session states.
@@ -315,7 +319,7 @@ Changed after the final review:
 
 Check these first, before building on them:
 
-1. Security tooling allows the sudoers rule and the user LaunchAgent.
+1. Security tooling allows the sudoers rule and the watchdog job.
 2. `sudo -n /usr/bin/pmset sleepnow` works with the lid closed and puts the Mac to sleep; releasing alone does not.
    - Result: deferred to the owner session (Task 11).
 3. Hooks in exec form: the config syntax, that the parent is the Claude process, and its process name in the terminal and the VS Code extension.
