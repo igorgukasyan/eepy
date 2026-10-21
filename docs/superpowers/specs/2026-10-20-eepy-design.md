@@ -280,7 +280,7 @@ Changed after the adversarial reviews:
 - **Triggers act whenever eepy holds, not only with the lid closed.** While eepy holds, macOS can't sleep itself for heat or low battery. With the lid open, a trigger now makes eepy release (never sleep) until it clears. With the lid closed, it still stops.
 - **Every release with the lid closed is followed by `sleepnow`**, because releasing alone doesn't sleep a closed Mac.
 - **eepy never starts holding while unattended**, so background wakes can't re-arm it.
-- **The watchdog is a user LaunchAgent driven by a heartbeat**, not a root LaunchDaemon checking a PID. This catches hangs and suspends, removes a privilege-escalation path, and keeps the log owned by the owner.
+- **The watchdog runs as the owner and is driven by a heartbeat**, not a root job checking a PID (it was first a user LaunchAgent; see the owner-session change below for why it is now a system LaunchDaemon run as the owner). This catches hangs and suspends, removes a privilege-escalation path, and keeps the log owned by the owner.
 - **Hooks added:** `PostToolUse` (working again after an approval, and a heartbeat during long turns), and `PreToolUse` for AskUserQuestion and ExitPlanMode (finished). `idle_prompt` no longer overwrites waiting.
 - **The hook finds its Claude process** by walking up from its parent to the first `claude` process. In exec form that is one step; in shell form it still works.
 - **The gap rule is now concrete:** more than 3 check intervals. It mainly guards against eepy coming back from a hang in a bag.
