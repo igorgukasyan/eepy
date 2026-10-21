@@ -17,6 +17,10 @@ define_stubs() {
     [[ " $* " == *" -l "* ]] && return ${SUDO_L_RC:-0}
     CALLS+=("$*")
     print -r -- "$*" >> $EEPY_HOME/calls
+    if [[ "$*" == *"launchctl bootstrap"* ]]; then   # the watchdog job "runs" at once unless NO_STAMP
+      (( ${AGENT_RC:-0} )) && return $AGENT_RC
+      (( ${NO_STAMP:-0} )) || touch $EEPY_HOME/watchdog
+    fi
     if (( ${SUDO_RC:-0} == 0 )); then
       [[ "$*" == *"disablesleep 1"* ]] && ROOT_OUT='"SleepDisabled" = Yes'
       [[ "$*" == *"disablesleep 0"* ]] && ROOT_OUT='"SleepDisabled" = No'
@@ -406,6 +410,9 @@ t_setup_text() {
   agent_plist /x/eepy | plutil -lint - >/dev/null || is invalid valid plist-lint
   is "$(agent_plist /x/eepy | plutil -extract StartInterval raw -)" 60 interval
   is "$(agent_plist /x/eepy | plutil -extract ProgramArguments.1 raw -)" watchdog runs-watchdog
+  is "$(agent_plist /x/eepy | plutil -extract UserName raw -)" $USER runs-as-owner
+  is "$(agent_plist /x/eepy | plutil -extract EnvironmentVariables.HOME raw -)" $HOME has-home
+  is "$(agent_plist /x/eepy | plutil -extract StandardErrorPath raw -)" /dev/null no-stderr-file
 }
 t_merge_hooks() {   # Review Focus 4
   local E=/Users/x/.local/bin/eepy m other='{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}'
@@ -432,12 +439,24 @@ t_setup_fixes() {   # settings.json mode, failed release, foreign link, bad merg
   HOME=$(mktemp -d); mkdir -p $HOME/.claude; print -r '{"model":"opus"}' > $HOME/.claude/settings.json; chmod 600 $HOME/.claude/settings.json
   setup >/dev/null 2>&1; is $? 0 setup-ok
   is "$(stat -f %Lp $HOME/.claude/settings.json)" 600 setup-keeps-mode
+  local D=/Library/LaunchDaemons/local.eepy.watchdog.plist
+  grep -q "^install -m 644 -o root -g wheel .* $D\$" $EEPY_HOME/calls || is missing called daemon-installed
+  grep -qx "launchctl bootstrap system $D" $EEPY_HOME/calls || is missing called daemon-bootstrapped
+  [[ -e $EEPY_LOG ]] || is missing created log-created
   is "$(jq -r .model $HOME/.claude/settings.json)" opus setup-keeps-settings
   AGENT_RC=1 setup >/dev/null 2>$EEPY_HOME/err2; is $? 1 step3-fails
   grep -q "sudoers rule .* is installed; run \"$EEPY_PATH uninstall\"" $EEPY_HOME/err2 || is missing said step3-uninstall-hint
+  NO_STAMP=1 setup >/dev/null 2>$EEPY_HOME/err2; is $? 1 not-run-fails
+  grep -qF 'the watchdog job did not run; macOS may have blocked it (check System Settings > General > Login Items)' $EEPY_HOME/err2 || is missing said not-run-message
+  mkdir -p $HOME/Library/LaunchAgents; : > $HOME/Library/LaunchAgents/local.eepy.watchdog.plist
+  setup >/dev/null 2>&1; is $? 0 setup-again-ok
+  [[ -e $HOME/Library/LaunchAgents/local.eepy.watchdog.plist ]] && is present removed old-agent-plist-removed
   rm $HOME/.claude/settings.json; setup >/dev/null 2>&1
   is "$(stat -f %Lp $HOME/.claude/settings.json)" 600 setup-new-file-600
+  CALLS=()
   uninstall >/dev/null 2>&1; is $? 0 uninstall-ok
+  (( ${CALLS[(I)launchctl bootout system/local.eepy.watchdog]} )) || is missing called daemon-booted-out
+  (( ${CALLS[(I)rm -f /Library/LaunchDaemons/local.eepy.watchdog.plist]} )) || is missing called daemon-removed
   is "$(stat -f %Lp $HOME/.claude/settings.json)" 600 uninstall-keeps-mode
   [[ -e $HOME/.local/bin/eepy ]] && is present removed own-link-removed
   mkdir -p $HOME/.local/bin $EEPY_HOME; : > $HOME/.local/bin/eepy
