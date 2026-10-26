@@ -6,6 +6,7 @@ zmodload zsh/datetime zsh/system
 VERSION=0.1.0
 
 # ---- Defaults (owner-editable) ----
+DEFAULT_CLAUDE=1      # 1 = plain eepy is Claude-aware, 0 = plain eepy keeps the Mac awake like a stronger caffeinate
 DEFAULT_FLOOR=20      # battery floor, percent
 DEFAULT_UNPLUG=0      # 1 = treat "on battery" as a trigger
 DEFAULT_LOWPOWER=0    # 1 = treat Low Power Mode as a trigger
@@ -120,10 +121,12 @@ decide() {
 usage() {
   cat <<'USAGE'
 Commands:
-  eepy                  hold while any Claude session is active, until stopped
+  eepy                  default mode (Claude mode as shipped), until stopped
   eepy 2h               same, for the next 2 hours only
-  eepy --no-claude      hold until stopped, ignoring Claude
-  eepy 2h --no-claude   hold for the next 2 hours, ignoring Claude
+  eepy 140m             same, for the next 140 minutes
+  eepy --claude         Claude mode: hold while any Claude session is active
+  eepy --no-claude      plain mode: hold until stopped, ignoring Claude
+  eepy 2h --no-claude   plain mode for the next 2 hours
   eepy --battery 10     battery floor 10% (default 20%)
   eepy --unplug         also treat "on battery" as a trigger
   eepy --low-power      also treat Low Power Mode as a trigger
@@ -557,12 +560,13 @@ on_signal() {
 }
 
 parse_args() {
-  CMD=run LIMIT=0 NOCLAUDE=0
+  CMD=run LIMIT=0 NOCLAUDE=$(( !DEFAULT_CLAUDE ))
   FLOOR=$DEFAULT_FLOOR UNPLUG=$DEFAULT_UNPLUG LOWPOWER=$DEFAULT_LOWPOWER
   local secs
   while (( $# )); do
     case $1 in
       setup|uninstall|hook|watchdog) CMD=$1 ;;
+      --claude) NOCLAUDE=0 ;;
       --no-claude) NOCLAUDE=1 ;;
       --unplug) UNPLUG=1 ;;
       --low-power) LOWPOWER=1 ;;

@@ -98,6 +98,11 @@ t_args() {
   parse_args --nope 2>/dev/null      && is accepted rejected unknown-flag
   parse_args --battery 0 2>/dev/null && is accepted rejected battery-0
   parse_args 90 2>/dev/null          && is accepted rejected duration-without-unit
+  DEFAULT_CLAUDE=0; parse_args;                                is "$NOCLAUDE" 1 default-claude-off
+  DEFAULT_CLAUDE=0; parse_args --claude;                       is "$NOCLAUDE" 0 claude-flag
+  DEFAULT_CLAUDE=1; parse_args --no-claude;                    is "$NOCLAUDE" 1 no-claude-flag
+  parse_args --no-claude --claude;                             is "$NOCLAUDE" 0 last-flag-wins
+  parse_args 140m;                                             is "$LIMIT" 8400 140m
 }
 t_log() {
   log hello > $EEPY_HOME/out; is "$(<$EEPY_HOME/out)" "" file-only-by-default
