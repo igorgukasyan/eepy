@@ -97,10 +97,12 @@ Verified on this Mac (MacBook Pro Mac15,6, macOS 26.6, Apple Silicon, FileVault 
 ## Commands
 
 ```
-eepy                  hold while any Claude session is active, until stopped
+eepy                  default mode (Claude mode as shipped), until stopped
 eepy 2h               same, for the next 2 hours only
-eepy --no-claude      hold until stopped, ignoring Claude
-eepy 2h --no-claude   hold for the next 2 hours, ignoring Claude
+eepy 140m             same, for the next 140 minutes
+eepy --claude         Claude mode: hold while any Claude session is active
+eepy --no-claude      plain mode: hold until stopped, ignoring Claude
+eepy 2h --no-claude   plain mode for the next 2 hours
 eepy --battery 10     battery floor 10% (default 20%)
 eepy --unplug         also treat "on battery" as a trigger
 eepy --low-power      also treat Low Power Mode as a trigger
@@ -112,7 +114,7 @@ eepy watchdog         internal: called by the watchdog job every minute
 
 Flags combine. The time limit always means "for the next N", counted from when eepy starts. eepy runs in the foreground of the terminal it was started in and prints its log lines there. Ctrl-Z is ignored.
 
-Defaults at the top of the script (editable by the owner): battery floor 20%, unplug off, Low Power Mode off, grace period 2 minutes, check interval 30 seconds.
+Defaults at the top of the script (editable by the owner): Claude mode on (`DEFAULT_CLAUDE=1`, so plain `eepy` is Claude-aware as shipped; set it to 0 to make plain `eepy` work like a stronger `caffeinate`, with `--claude` turning Claude handling on), battery floor 20%, unplug off, Low Power Mode off, grace period 2 minutes, check interval 30 seconds. `--claude` and `--no-claude` override the default for one run; if both are given, the last one wins.
 
 Hardcoded safety: thermal pressure "serious" (2) or worse, battery temperature 40°C or more, the 1-hour activity cap, fail closed on unreadable sensors, unattended when the lid can't be read, the watchdog and its 90-second heartbeat limit, read-back of every change.
 
@@ -253,7 +255,8 @@ Known limit: the sudo rule lets any process running as the owner set `disablesle
 - Waiting for permission counts as finished.
 - Background work that never ends is capped at 1 hour with no activity.
 - Lid closed with an external monitor attached counts as in use (the owner doesn't work that way today, but wants it handled).
-- Must work with or without a time limit. `eepy 2h` means "for the next 2 hours".
+- Must work with or without a time limit. `eepy 2h` means "for the next 2 hours"; minutes work too (`eepy 140m`).
+- Claude mode is a setting with a shipped default of on (2026-10-26): out of the box `eepy` is Claude-aware; the owner can switch the default off so `eepy` is a stronger `caffeinate`, and turn Claude handling on per run with `--claude`.
 - Must run all day without being switched off by gaps. eepy started before any session must work.
 - Safety settings hardcoded for now. Other settings configurable.
 - Main use cases easy to reach without many commands.
