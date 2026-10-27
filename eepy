@@ -240,8 +240,8 @@ panel() {
     heat "$(bar $hf 4)" $hn $HEAT[THERMAL_MAX+1] \
     battery "$(bar $bf 10)" $pct% $FLOOR% \
     temp "$(bar $tf 10)" ${tc}°C $(( TEMP_MAX / 100 ))°C)}")
-  (( NOCLAUDE )) && return 0
   PANEL+=($rule)
+  (( NOCLAUDE )) && PANEL+=($' \e[38;5;244mplain mode: sessions are shown, not counted\e[0m')
   for e in ${(s:, :)REPORT}; do
     w=(${=e})
     if [[ $e == +* ]]; then PANEL+=("           $e")
@@ -616,7 +616,7 @@ check_once() {
   read -r th lpm <<< $(read_os)
   temp=$(read_temp)
   read -r pct src <<< $(read_batt)
-  (( NOCLAUDE )) || scan_sessions $t
+  scan_sessions $t   # in plain mode too, so the panel can list them; they only count in Claude mode
   if (( NOCLAUDE )); then want=1
   elif (( ACTIVE > 0 )); then want=1 LAST_ACTIVE=$t
   elif (( LAST_ACTIVE > 0 && t - LAST_ACTIVE < GRACE )); then want=1

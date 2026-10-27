@@ -343,7 +343,10 @@ t_thoughts() {
   loop_reset; lid No; NOW=1000; PMSET_BATT="Now drawing from 'AC Power'
  -InternalBattery-0 (id=1)	80%; charged; present: true"; check_once
   [[ $PANEL[2] == *'on AC' ]] || is "$PANEL[2]" "ends with on AC" on-AC }
-t_noclaude()     { loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once; is $HOLDING 1 uc12-holds-without-sessions }
+t_noclaude()     { loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once; is $HOLDING 1 uc12-holds-without-sessions
+  sess finished 1000; NOW=1300; check_once; is $HOLDING 1 plain-ignores-finished-sessions
+  is "$PANEL[-2]" $' \e[38;5;244mplain mode: sessions are shown, not counted\e[0m' plain-panel-note
+  is "$PANEL[-1]" " a         ✓ finished  5m" plain-panel-lists-sessions }
 t_time_limit()   { loop_reset; lid Yes; NOCLAUDE=1; HOLDING=1; held Yes; END=2000; NOW=2000
   check_once; is $? 1 uc11-stops; grep -q 'TRIGGER time limit reached' $EEPY_LOG || is missing logged uc11-logged }
 t_stop_trigger() { loop_reset; lid Yes; NOW=1000; sess working; HOLDING=1; held Yes; OS_OUT='2 0'
