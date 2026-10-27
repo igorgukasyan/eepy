@@ -13,17 +13,40 @@ DEFAULT_LOWPOWER=0    # 1 = treat Low Power Mode as a trigger
 GRACE=120             # seconds
 INTERVAL=30           # seconds between checks; keep well under HEARTBEAT_MAX (90 s) or the watchdog releases a healthy eepy
 
-# ---- The kitty's thoughts (owner-editable): up to 28 characters fit in its cloud, longer ones are cut with … ----
-typeset -gA THOUGHTS=(
-  working  "purr… Claude's working"     # keeping the Mac awake while a session works
-  grace    "one more minute…"           # keeping it awake through the grace period after work ends
-  plain    "keeping your Mac awake"     # keeping it awake in plain mode
-  hot      "too warm, cooling off"      # paused: heat or battery temperature
-  battery  "battery's low, bedtime"     # paused: battery floor
-  unplug   "unplugged, napping"         # paused: on battery with --unplug
-  lowpower "Low Power Mode, napping"    # paused: Low Power Mode with --low-power
-  failure  "something's off, napping"   # paused: a sensor could not be read
-  idle     "no work, just napping"      # not keeping it awake
+# ---- The kitty's thoughts (owner-editable): one per line, "state  text". Add or remove lines freely; every few
+# seconds the kitty shows a random one for the current state. Up to 28 characters fit in its cloud.
+#   working   keeping the Mac awake while a session works    hot       paused: heat or battery temperature
+#   grace     keeping it awake just after work ends          battery   paused: battery floor
+#   plain     keeping it awake in plain mode                 unplug    paused: on battery with --unplug
+#   idle      not keeping it awake                           lowpower  paused: Low Power Mode with --low-power
+#                                                            failure   paused: a sensor could not be read
+typeset -ga THOUGHTS=(
+  working  "purr… Claude's working"
+  working  "guarding Claude's work"
+  working  "shh, Claude is thinking"
+  working  "dreaming of tidy code"
+  working  "keeping the lid warm"
+  grace    "one more minute…"
+  grace    "is Claude done yet?"
+  grace    "waiting for one more task"
+  plain    "keeping your Mac awake"
+  plain    "napping with one ear up"
+  plain    "ready when you are"
+  plain    "on watch, eyes half shut"
+  hot      "too warm, cooling off"
+  hot      "phew, need some air"
+  battery  "battery's low, bedtime"
+  battery  "need a charge and a nap"
+  unplug   "unplugged, napping"
+  unplug   "no charger, no party"
+  lowpower "Low Power Mode, napping"
+  lowpower "saving energy, cat style"
+  failure  "something's off, napping"
+  failure  "can't read my sensors…"
+  idle     "no work, just napping"
+  idle     "dreaming of mice"
+  idle     "zzz… wake me for work"
+  idle     "curled up, all quiet"
 )
 
 # ---- Safety constants: do not change ----
@@ -46,7 +69,7 @@ DAEMON_PLIST=/Library/LaunchDaemons/local.eepy.watchdog.plist
 # ---- Loop state (epoch seconds; END=0 means no limit; LOCK_FD is set once this eepy holds the lock) ----
 HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT= LOCK_FD=
 # ---- Terminal display (SHOW is panel, plain, or empty before start; LOG_N counts log lines already shown) ----
-SHOW= LOG_N=0 PANEL_H=0 PANEL=() THOUGHT=
+SHOW= LOG_N=0 PANEL_H=0 PANEL=() MOOD=idle THOUGHT= THOUGHT_MOOD=   # MOOD: the state the kitty thinks about
 # The kitty (kitty.txt, made by art/gen.py): KITTY holds every animation frame, KITTY_H lines each. The thought goes
 # in row KITTY_ROW between columns KITTY_A and KITTY_B (0-based). TICK picks the next frame; KLINES is the one drawn.
 KITTY=() KITTY_H=0 KITTY_ROW=0 KITTY_A=0 KITTY_B=0 TICK=0 KLINES=()
@@ -194,11 +217,23 @@ load_kitty() {
   KITTY=("${(@)k[2,-1]}") KITTY_H=$h[1] KITTY_ROW=$h[2] KITTY_A=$h[3] KITTY_B=$h[4]
 }
 
-# kitty: sets KLINES to the kitty's next animation frame in peach, with THOUGHT centred in its cloud.
+# think: sets THOUGHT to a random thought for MOOD from THOUGHTS, never the one just shown when there is a choice.
+think() {
+  local -a c d; local i
+  for (( i = 1; i < $#THOUGHTS; i += 2 )); do [[ $THOUGHTS[i] == $MOOD ]] && c+=("$THOUGHTS[i+1]"); done
+  d=("${(@)c:#${(b)THOUGHT}}"); (( $#d )) && c=("${(@)d}")
+  THOUGHT= THOUGHT_MOOD=$MOOD
+  (( $#c )) && THOUGHT=${c[RANDOM % $#c + 1]}
+}
+
+# kitty: sets KLINES to the kitty's next animation frame in peach, with THOUGHT centred in its cloud. A new thought
+# comes each time the animation starts again, and at once when the mood changes.
 kitty() {
   KLINES=()
   (( KITTY_H )) || return 0
-  local f=$(( TICK++ % ($#KITTY / KITTY_H) * KITTY_H )) w=$(( KITTY_B - KITTY_A + 1 )) msg=$THOUGHT i l s
+  local n=$(( $#KITTY / KITTY_H ))
+  if (( TICK % n == 0 )) || [[ $MOOD != $THOUGHT_MOOD ]]; then think; fi
+  local f=$(( TICK++ % n * KITTY_H )) w=$(( KITTY_B - KITTY_A + 1 )) msg=$THOUGHT i l s
   (( $#msg > w )) && msg="${msg[1,w-1]}…"
   for (( i = 1; i <= KITTY_H; i++ )); do
     l=${KITTY[f + i]}
@@ -207,7 +242,7 @@ kitty() {
   done
 }
 
-# panel: builds PANEL, the terminal status box, and picks the kitty's THOUGHT. Called at the end of check_once and
+# panel: builds PANEL, the terminal status box, and sets the kitty's MOOD. Called at the end of check_once and
 # reads its locals.
 panel() {
   local mode='Claude mode' left='no time limit' state='○ RELEASED' lid='lid closed' e hf=0 bf=0 tf=0 mood=idle
@@ -230,7 +265,7 @@ panel() {
       *) mood=failure ;;
     esac
   fi
-  THOUGHT=$THOUGHTS[$mood]
+  MOOD=$mood
   [[ $th == <0-3> ]] && hf=$(( th + 1 ))
   [[ $pct == <-> ]] && bf=$(( (pct + 5) / 10 ))
   [[ $temp == <-> ]] && tf=$(( temp * 10 / TEMP_MAX ))
