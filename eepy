@@ -21,6 +21,10 @@ INTERVAL=30           # seconds between checks; keep well under HEARTBEAT_MAX (9
 #   idle      not keeping it awake                           lowpower  paused: Low Power Mode with --low-power
 #                                                            failure   paused: a sensor could not be read
 typeset -ga THOUGHTS=(
+  working  "mimimi meaow meow mewoow"
+  working  "i am death"
+  working  "missing Chitresh"
+  working  "baby Claude, keep working"
   working  "purr… Claude's working"
   working  "guarding Claude's work"
   working  "shh, Claude is thinking"
@@ -33,7 +37,10 @@ typeset -ga THOUGHTS=(
   plain    "napping with one ear up"
   plain    "ready when you are"
   plain    "on watch, eyes half shut"
-  hot      "too warm, cooling off"
+  plain    "you are a meatbag, i am a cat"
+  plain    "i own you"
+  plain    "keep working"
+  hot      "AW AW HOT HOT, cooling off"
   hot      "phew, need some air"
   battery  "battery's low, bedtime"
   battery  "need a charge and a nap"
