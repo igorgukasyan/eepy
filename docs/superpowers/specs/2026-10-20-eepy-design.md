@@ -225,7 +225,7 @@ It runs as the owner, not root, so it can't be used to gain privilege (only its 
 One plain-text log at `~/Library/Logs/eepy.log`. eepy also prints each line to its terminal, written separately rather than through a `tee` pipe. Every line has a timestamp. It records:
 
 - **Start:** version, flags and every setting in force, including the hardcoded safety limits.
-- **Each check while holding:** attended or not (lid, display), thermal pressure, battery %, battery temperature, power source, Low Power Mode, and each session's state and time since its last activity.
+- **Each check while holding:** attended or not (lid, display), thermal pressure, battery %, battery temperature, power source, Low Power Mode, and each session's state and time since its last activity. Sessions quiet for longer than the 1h cap are counted, not listed. Lines use plain words and short durations (`2h20m`, `45s`).
 - **While released:** only changes in attended state or session states, to keep the log readable on all-day runs.
 - **Every hold and release:** the `pmset` command, its result and the read-back value.
 - **Hooks:** one line per session state change, so a wrong "finished" can be traced.

@@ -139,6 +139,18 @@ USAGE
 
 now() { print -r -- $EPOCHSECONDS; }
 
+HEAT=(nominal fair serious critical)   # thermal pressure names, 0 to 3
+
+# dur <seconds>: 45s, 12m, 2h or 2h20m
+dur() {
+  local s=$1
+  if (( s < 60 )); then print ${s}s
+  elif (( s < 3600 )); then print $(( s / 60 ))m
+  elif (( s % 3600 < 60 )); then print $(( s / 3600 ))h
+  else print $(( s / 3600 ))h$(( s % 3600 / 60 ))m
+  fi
+}
+
 log() {
   local line="$(date '+%F %T') $*"
   mkdir -p ${EEPY_LOG:h}
@@ -237,9 +249,9 @@ hook_run() {
   return 0
 }
 
-# scan_sessions <now>: sets ACTIVE (count) and REPORT ("<id8> <state> <age>s, ..."). Deletes unparseable and mismatched files.
+# scan_sessions <now>: sets ACTIVE (count) and REPORT ("<id8> <state> <age>, ..., +N idle >1h"). Deletes unparseable and mismatched files.
 scan_sessions() {
-  local now=$1 f id st act pid start age
+  local now=$1 f id st act pid start age old=0
   local -a L R
   ACTIVE=0 REPORT=""
   for f in $EEPY_HOME/sessions/*(N); do
@@ -250,9 +262,11 @@ scan_sessions() {
     st=$L[1] act=$L[2] pid=$L[3] start=$L[4]
     [[ "$(proc_start $pid)" == "$start" ]] || { rm -f $f; continue }
     age=$(( now - act ))
-    id=${f:t}; R+=("${id[1,8]} $st ${age}s")
+    id=${f:t}
+    if (( age < CAP )); then R+=("${id[1,8]} $st $(dur $age)"); else (( old++ )); fi
     [[ $st != finished ]] && (( age >= 0 && age < CAP )) && (( ACTIVE++ ))
   done
+  (( old )) && R+=("+$old idle >$(dur $CAP)")
   REPORT=${(j:, :)R}
 }
 
@@ -466,7 +480,7 @@ uninstall() {
 
 # One pass of the spec's Behaviour. Returns 0 to carry on, 1 once eepy has stopped and released.
 check_once() {
-  local t prev elapsed gap=0 want=0 timeup=0 tripped=0 attended th lpm temp pct src reason tc s
+  local t prev elapsed gap=0 want=0 timeup=0 tripped=0 attended th lpm temp pct src reason tc s seen
   t=$(now)
   touch $EEPY_HOME/heartbeat
   prev=$HOLDING; HOLDING=$(read_held)
@@ -509,12 +523,14 @@ check_once() {
       (( HOLDING )) && return 0
       return 1 ;;
   esac
+  (( attended )) && seen=attended || seen=unattended
   if (( HOLDING )); then
-    tc='?'; [[ $temp == <-> ]] && printf -v tc '%d.%02d' $((temp / 100)) $((temp % 100))
-    log "attended=$attended thermal=$th temp=${tc}°C batt=$pct% $src lpm=$lpm sessions: $REPORT"
+    tc='?'; [[ $temp == <-> ]] && tc=$((temp / 100)).$((temp % 100 / 10))
+    [[ $th == <0-3> ]] && th=$HEAT[th+1]
+    log "holding: $seen, heat $th, battery $pct% at ${tc}°C, on $src, low power ${${lpm/1/on}/0/off}; sessions: ${REPORT:-none}"
   else
-    s="attended=$attended active=$ACTIVE"
-    (( want && tripped )) && s+=" not holding: $reason"
+    s="not holding: $seen, active sessions $ACTIVE"
+    (( want && tripped )) && s+="; $reason"
     [[ $s != $LAST_SUMMARY ]] && log $s
     LAST_SUMMARY=$s
   fi
@@ -534,9 +550,13 @@ run() {
   [[ $mt == <-> ]] && (( t - mt >= 0 && t - mt <= 150 )) ||
     { print -u2 'the eepy watchdog has not run in the last 2.5 minutes; run "eepy setup"'; return 1 }
   LOG_TTY=1
-  log "start: eepy $VERSION limit=${LIMIT}s no-claude=$NOCLAUDE battery-floor=$FLOOR% unplug=$UNPLUG low-power=$LOWPOWER" \
-    "grace=${GRACE}s interval=${INTERVAL}s thermal-max=$THERMAL_MAX temp-max=$TEMP_MAX cap=${CAP}s" \
-    "heartbeat-max=${HEARTBEAT_MAX}s hops=$HOPS"
+  local lim='no time limit' mode='Claude mode'
+  (( LIMIT > 0 )) && lim="$(dur $LIMIT) limit"
+  (( NOCLAUDE )) && mode='plain mode'
+  log "start: eepy $VERSION, $lim, $mode, battery floor $FLOOR%," \
+    "sleep on unplug ${${UNPLUG/1/on}/0/off}, sleep on Low Power Mode ${${LOWPOWER/1/on}/0/off}"
+  log "safety: heat max $HEAT[THERMAL_MAX+1], battery temp max $((TEMP_MAX / 100))°C, grace $(dur $GRACE)," \
+    "check every $(dur $INTERVAL), session cap $(dur $CAP), heartbeat max $(dur $HEARTBEAT_MAX), hops $HOPS"
   (( LIMIT > 0 )) && END=$(( $(now) + LIMIT ))
   HOLDING=$(read_held)
   (( HOLDING )) && log "FAILURE sleep was already disabled at start; taking it over"

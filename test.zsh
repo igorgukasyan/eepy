@@ -242,9 +242,11 @@ t_sessions() {
   print garbage > $d/f            # unparseable
   scan_sessions 1500; is $ACTIVE 2 two-active
   is "$(ls $d | tr '\n' ' ')" "a b c " dead-reused-garbage-deleted
-  is "$REPORT" "a working 500s, b waiting 500s, c finished 500s" report
+  is "$REPORT" "a working 8m, b waiting 8m, c finished 8m" report
   scan_sessions 4599; is $ACTIVE 2 uc4-just-under-cap
   scan_sessions 4600; is $ACTIVE 0 uc4-cap-reached
+  is "$REPORT" "+3 idle >1h" report-old-collapsed
+  is "$(dur 45) $(dur 600) $(dur 7200) $(dur 8400) $(dur 3659)" "45s 10m 2h 2h20m 1h" dur
   rm -rf $d; scan_sessions 1500; is "$ACTIVE" 0 missing-dir
   mkdir -p $d
   mk g working 9999 4000 L1       # future activity: kept, not active
@@ -288,6 +290,8 @@ t_all_day() {   # uc8, uc10, uc1, uc26
   loop_reset; lid No
   NOW=1000; check_once; is $HOLDING 0 morning-idle
   NOW=1030; sess working; check_once; is $HOLDING 1 working-at-desk-holds
+  is "$(tail -1 $EEPY_LOG | cut -d' ' -f3-)" \
+    "holding: attended, heat nominal, battery 57% at 30.3°C, on battery, low power off; sessions: a working 0s" holding-line
   NOW=1060; lid Yes; check_once; is $HOLDING 1 lid-closed-keeps-holding
   NOW=1090; sess finished 1060; check_once; is $HOLDING 1 grace
   NOW=1170; check_once; is $HOLDING 1 still-grace       # grace counts from the last check that saw it active (1060)
@@ -297,9 +301,9 @@ t_all_day() {   # uc8, uc10, uc1, uc26
   NOW=1270; lid No; check_once; is $HOLDING 1 lid-open-arms-again
 }
 t_not_holding() { loop_reset; lid No; NOW=1000; OS_OUT='2 0'
-  check_once; is "$(tail -1 $EEPY_LOG | cut -d' ' -f3-)" "attended=1 active=0" no-reason-when-not-wanted
+  check_once; is "$(tail -1 $EEPY_LOG | cut -d' ' -f3-)" "not holding: attended, active sessions 0" no-reason-when-not-wanted
   sess working; check_once; NOW=1030; sess working; check_once; is $HOLDING 0 tripped-not-held
-  is "$(grep -cF 'attended=1 active=1 not holding: TRIGGER heat: thermal pressure 2 (limit 2)' $EEPY_LOG)" 1 reason-logged-once }
+  is "$(grep -cF 'not holding: attended, active sessions 1; TRIGGER heat: thermal pressure 2 (limit 2)' $EEPY_LOG)" 1 reason-logged-once }
 t_noclaude()     { loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once; is $HOLDING 1 uc12-holds-without-sessions }
 t_time_limit()   { loop_reset; lid Yes; NOCLAUDE=1; HOLDING=1; held Yes; END=2000; NOW=2000
   check_once; is $? 1 uc11-stops; grep -q 'TRIGGER time limit reached' $EEPY_LOG || is missing logged uc11-logged }
@@ -349,7 +353,7 @@ t_single_instance() {   # Review Focus 5
 }
 t_prompt_wakes() {   # a prompt just before the lid closes is seen within seconds, not at the next 30 s check
   zsh $TEST_FILE child >/dev/null 2>&1 &; local p=$!
-  wait_for 'attended=1 active=0' $EEPY_LOG || is no checked first-check
+  wait_for 'not holding: attended, active sessions 0' $EEPY_LOG || is no checked first-check
   print -rl -- working $EPOCHSECONDS 4000 L1 > $EEPY_HOME/s; mv $EEPY_HOME/s $EEPY_HOME/sessions/a
   wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held holds-within-seconds
   kill -TERM $p; wait $p 2>/dev/null
@@ -364,7 +368,10 @@ t_signal_release() {   # Review Focus 1
 t_signal_exits() {   # a stopped eepy must not linger in `wait` (holding the lock) until the sleep ends
   zsh $TEST_FILE child --no-claude >/dev/null 2>&1 &; local p=$! i
   wait_for 'disablesleep 1' $EEPY_HOME/calls || is no held child-holds
-  grep -q "start: eepy $VERSION " $EEPY_LOG || is missing logged start-line-version
+  grep -q "start: eepy $VERSION, no time limit, plain mode, battery floor 20%, sleep on unplug off" $EEPY_LOG ||
+    is missing logged start-line
+  grep -q "safety: heat max serious, battery temp max 40°C, grace 2m, check every 30s, session cap 1h" $EEPY_LOG ||
+    is missing logged safety-line
   kill -QUIT $p
   for i in {1..20}; do kill -0 $p 2>/dev/null || break; sleep 0.1; done
   kill -0 $p 2>/dev/null && { is lingering exited exits-promptly; kill -KILL $p }
