@@ -303,7 +303,7 @@ t_not_holding() { loop_reset; lid No; NOW=1000; OS_OUT='2 0'
   check_once; is "$(tail -1 $EEPY_LOG | cut -d' ' -f3-)" "not holding: attended, active sessions 0" no-reason-when-not-wanted
   sess working; check_once; NOW=1030; sess working; check_once; is $HOLDING 0 tripped-not-held
   is "$(grep -cF 'not holding: attended, active sessions 1; TRIGGER heat: thermal pressure 2 (limit 2)' $EEPY_LOG)" 1 reason-logged-once }
-t_panel() { loop_reset; lid No; NOW=1000; END=8200; FLOOR=20; sess working; check_once
+t_panel() { loop_reset; load_kitty; lid No; NOW=1000; END=8200; FLOOR=20; sess working; check_once
   is "$PANEL[1]" " eepy · Claude mode · 2h left" panel-header
   is "$PANEL[2]" $' \e[32m● AWAKE\e[0m · lid open or monitor · on battery' panel-state
   is "$PANEL[4]" " heat     █░░░        nominal  limit serious" panel-heat
@@ -312,11 +312,37 @@ t_panel() { loop_reset; lid No; NOW=1000; END=8200; FLOOR=20; sess working; chec
   is "$PANEL[8]" " a         ▶ working   0s" panel-session
   SHOW=panel LOG_N=$(wc -l < $EEPY_LOG); log "holding: x"; log "hook a none -> working (X)"; log "hold: y"
   show > $EEPY_HOME/o; local o=$(<$EEPY_HOME/o); is "${o%%$'\n'*}" "${$(tail -1 $EEPY_LOG)#* }" show-skips-routine-lines
-  [[ $o == *"$KITTY[2]"$'\n'* ]] || is missing drawn kitty-drawn
-  is $PANEL_H $(( 10 + $#PANEL )) height-counts-kitty
+  [[ $o == *"purr… Claude's working"* ]] || is missing drawn kitty-drawn-with-thought
+  is $PANEL_H $(( 18 + $#PANEL )) height-counts-kitty
+  is ${#PANEL[3]} $(( 1 + ${#KITTY[1]} )) dividers-as-wide-as-kitty
   [[ $o == *"$PANEL[1]"* ]] || is missing drawn show-draws-panel
   LOG_N=$(wc -l < $EEPY_LOG) PANEL_H=9; is "$(show last)" $'\e[9A\e[J' show-last-erases-panel
   OS_OUT='2 0'; NOW=1030; check_once; is "$PANEL[3]" " TRIGGER heat: thermal pressure 2 (limit 2)" panel-paused-reason }
+t_kitty() { load_kitty; is "$KITTY_H $#KITTY $KITTY_ROW" "18 108 4" loads-six-frames
+  THOUGHT=hi; kitty; [[ $KLINES[KITTY_ROW+1] == *⠀hi⠀* ]] || is "$KLINES[KITTY_ROW+1]" "hi in the cloud" thought-in-cloud
+  local first="${(F)KLINES}" i; for i in {1..5}; do kitty; done
+  [[ "${(F)KLINES}" == $first ]] && is same different frames-move
+  kitty; is "${(F)KLINES}" "$first" six-frame-cycle
+  THOUGHT=${(l:40::x:)}; kitty; local l=${${KLINES[KITTY_ROW+1]#*$'\e[38;5;173m'}%$'\e[0m'}
+  [[ $l == *x… ]] || [[ $l == *x…⠀* ]] || is "$l" "cut with …" long-thought-cut
+  is $#l ${#KITTY[1]} long-thought-keeps-width
+  EEPY_PATH=$EEPY_HOME/none/eepy KITTY=() KITTY_H=0; load_kitty; kitty; is "$KITTY_H $#KLINES" "0 0" missing-file-no-kitty
+  mkdir -p $EEPY_HOME/bad; print -l '18 x 1 2' a > $EEPY_HOME/bad/kitty.txt; EEPY_PATH=$EEPY_HOME/bad/eepy
+  load_kitty; is $KITTY_H 0 bad-header-no-kitty }
+t_thoughts() {
+  is "$THOUGHTS[idle] / $THOUGHTS[working]" "no work, just napping / purr… Claude's working" defaults-defined
+  loop_reset; lid No; NOW=1000; check_once;                          is "$THOUGHT" "$THOUGHTS[idle]" idle
+  sess working; NOW=1030; check_once;                                is "$THOUGHT" "$THOUGHTS[working]" working
+  sess finished 1030; NOW=1060; check_once;                          is "$THOUGHT" "$THOUGHTS[grace]" grace
+  loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once;              is "$THOUGHT" "$THOUGHTS[plain]" plain
+  loop_reset; lid No; NOW=1000; sess working; HOLDING=1; held Yes; OS_OUT='2 0'; check_once
+                                                                     is "$THOUGHT" "$THOUGHTS[hot]" hot
+  loop_reset; lid No; NOW=1000; FLOOR=60; sess working; check_once;  is "$THOUGHT" "$THOUGHTS[battery]" battery
+  loop_reset; lid No; NOW=1000; FLOOR=20; OS_OUT=junk; sess working; check_once
+                                                                     is "$THOUGHT" "$THOUGHTS[failure]" failure
+  loop_reset; lid No; NOW=1000; PMSET_BATT="Now drawing from 'AC Power'
+ -InternalBattery-0 (id=1)	80%; charged; present: true"; check_once
+  [[ $PANEL[2] == *'on AC' ]] || is "$PANEL[2]" "ends with on AC" on-AC }
 t_noclaude()     { loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once; is $HOLDING 1 uc12-holds-without-sessions }
 t_time_limit()   { loop_reset; lid Yes; NOCLAUDE=1; HOLDING=1; held Yes; END=2000; NOW=2000
   check_once; is $? 1 uc11-stops; grep -q 'TRIGGER time limit reached' $EEPY_LOG || is missing logged uc11-logged }

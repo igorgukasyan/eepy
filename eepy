@@ -13,6 +13,19 @@ DEFAULT_LOWPOWER=0    # 1 = treat Low Power Mode as a trigger
 GRACE=120             # seconds
 INTERVAL=30           # seconds between checks; keep well under HEARTBEAT_MAX (90 s) or the watchdog releases a healthy eepy
 
+# ---- The kitty's thoughts (owner-editable): up to 28 characters fit in its cloud, longer ones are cut with … ----
+typeset -gA THOUGHTS=(
+  working  "purr… Claude's working"     # keeping the Mac awake while a session works
+  grace    "one more minute…"           # keeping it awake through the grace period after work ends
+  plain    "keeping your Mac awake"     # keeping it awake in plain mode
+  hot      "too warm, cooling off"      # paused: heat or battery temperature
+  battery  "battery's low, bedtime"     # paused: battery floor
+  unplug   "unplugged, napping"         # paused: on battery with --unplug
+  lowpower "Low Power Mode, napping"    # paused: Low Power Mode with --low-power
+  failure  "something's off, napping"   # paused: a sensor could not be read
+  idle     "no work, just napping"      # not keeping it awake
+)
+
 # ---- Safety constants: do not change ----
 THERMAL_MAX=2         # OS thermal pressure "serious" or worse
 TEMP_MAX=4000         # battery temperature, hundredths of a degree C
@@ -33,19 +46,10 @@ DAEMON_PLIST=/Library/LaunchDaemons/local.eepy.watchdog.plist
 # ---- Loop state (epoch seconds; END=0 means no limit; LOCK_FD is set once this eepy holds the lock) ----
 HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT= LOCK_FD=
 # ---- Terminal display (SHOW is panel, plain, or empty before start; LOG_N counts log lines already shown) ----
-SHOW= LOG_N=0 PANEL_H=0 PANEL=()
-KITTY=(   # the eeping kitty (the owner's drawing, converted to braille with chafa), drawn above the panel
-  ' ⠀⠀⠀⠀⠀⠀⠠⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀'
-  ' ⠀⠀⢸⡆⢀⡀⠀⠈⠳⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠣⠀⠀⢀⣀⡠⠤⠖⠒⠒⠒⠒⠤⢄⣀⡀⠀⠀⠀⠀⠀⠀'
-  ' ⠀⠀⠀⠀⠘⠃⠰⠂⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⣀⡠⡴⠋⠸⢤⡎⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠙⢦⡀⠀⠀⠀'
-  ' ⠈⠉⠉⠀⠒⠒⠒⠦⠤⠀⠀⠀⠀⠀⣠⠤⣴⠟⠁⠀⠀⠀⠀⠐⠓⣢⣞⠅⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠢⡀⠀'
-  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⣔⣒⠉⠀⠀⠁⠀⠀⠀⠀⠀⠀⠀⠈⠘⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⠄'
-  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⡖⡀⡄⠀⠀⠀⠀⠀⠀⠀⢀⡄⠀⢻⣦⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡼⠀'
-  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣩⢽⡏⠁⠀⠀⠀⠀⠀⠀⠉⠀⢾⠯⠔⠂⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠀'
-  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠻⡄⠀⠘⠚⠀⠀⠤⢆⣤⠎⠀⠀⠀⠀⠀⡖⠉⠢⣀⠀⠀⣀⡴⠀⠀⠀⢨⠆'
-  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠒⠒⠚⣩⣿⡿⠿⠿⠖⠻⠧⠦⠄⠐⠦⠤⠤⠣⣀⠀⠀⠉⠉⠁⠀⠀⡀⠠⠊⠀'
-  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠑⠒⠤⠤⠐⠒⠋⠁⠀⠀⠀'
-)
+SHOW= LOG_N=0 PANEL_H=0 PANEL=() THOUGHT=
+# The kitty (kitty.txt, made by art/gen.py): KITTY holds every animation frame, KITTY_H lines each. The thought goes
+# in row KITTY_ROW between columns KITTY_A and KITTY_B (0-based). TICK picks the next frame; KLINES is the one drawn.
+KITTY=() KITTY_H=0 KITTY_ROW=0 KITTY_A=0 KITTY_B=0 TICK=0 KLINES=()
 
 # ---- Readers: thin wrappers over macOS commands ----
 read_lid() {
@@ -178,9 +182,36 @@ bar() {
   print -rn -- ${(l:f::█:)}${(l:$2-f::░:)}
 }
 
-# panel: builds PANEL, the terminal status box. Called at the end of check_once and reads its locals.
+# load_kitty: reads kitty.txt beside this script. A missing or malformed file just means no kitty.
+load_kitty() {
+  local f=${EEPY_PATH:h}/kitty.txt
+  local -a k h
+  [[ -r $f ]] || return 0
+  k=("${(@f)$(<$f)}")
+  [[ $k[1] == <1->' '<->' '<->' '<-> ]] || return 0
+  h=(${=k[1]})
+  (( $#k > 1 && ($#k - 1) % h[1] == 0 && h[2] < h[1] && h[3] <= h[4] )) || return 0
+  KITTY=("${(@)k[2,-1]}") KITTY_H=$h[1] KITTY_ROW=$h[2] KITTY_A=$h[3] KITTY_B=$h[4]
+}
+
+# kitty: sets KLINES to the kitty's next animation frame in peach, with THOUGHT centred in its cloud.
+kitty() {
+  KLINES=()
+  (( KITTY_H )) || return 0
+  local f=$(( TICK++ % ($#KITTY / KITTY_H) * KITTY_H )) w=$(( KITTY_B - KITTY_A + 1 )) msg=$THOUGHT i l s
+  (( $#msg > w )) && msg="${msg[1,w-1]}…"
+  for (( i = 1; i <= KITTY_H; i++ )); do
+    l=${KITTY[f + i]}
+    if (( i == KITTY_ROW + 1 )); then s=$(( KITTY_A + (w - $#msg) / 2 )); l=${l[1,s]}$msg${l[s + $#msg + 1,-1]}; fi
+    KLINES+=(" "$'\e[38;5;173m'$l$'\e[0m')
+  done
+}
+
+# panel: builds PANEL, the terminal status box, and picks the kitty's THOUGHT. Called at the end of check_once and
+# reads its locals.
 panel() {
-  local mode='Claude mode' left='no time limit' state='○ RELEASED' lid='lid closed' rule=" ${(l:41::─:)}" e hf=0 bf=0 tf=0
+  local mode='Claude mode' left='no time limit' state='○ RELEASED' lid='lid closed' e hf=0 bf=0 tf=0 mood=idle
+  local rw=${#KITTY[1]} rule; (( rw )) || rw=41; rule=" ${(l:rw::─:)}"   # dividers as wide as the kitty
   local -a w
   local -A icon=(working ▶ waiting … finished ✓)
   (( NOCLAUDE )) && mode='plain mode'
@@ -188,10 +219,22 @@ panel() {
   (( HOLDING )) && state=$'\e[32m● AWAKE\e[0m'
   (( !HOLDING && want && tripped )) && state=$'\e[33m● PAUSED\e[0m'
   (( attended )) && lid='lid open or monitor'
+  if (( HOLDING )); then
+    mood=grace; (( ACTIVE )) && mood=working; (( NOCLAUDE )) && mood=plain
+  elif (( want && tripped )); then
+    case $reason in
+      'TRIGGER heat'*|'TRIGGER battery temperature'*) mood=hot ;;
+      'TRIGGER battery '*) mood=battery ;;
+      'TRIGGER on battery'*) mood=unplug ;;
+      'TRIGGER Low Power'*) mood=lowpower ;;
+      *) mood=failure ;;
+    esac
+  fi
+  THOUGHT=$THOUGHTS[$mood]
   [[ $th == <0-3> ]] && hf=$(( th + 1 ))
   [[ $pct == <-> ]] && bf=$(( (pct + 5) / 10 ))
   [[ $temp == <-> ]] && tf=$(( temp * 10 / TEMP_MAX ))
-  PANEL=(" eepy · $mode · $left" " $state · $lid · on $src")
+  PANEL=(" eepy · $mode · $left" " $state · $lid · on ${src/ac/AC}")
   [[ $state == *PAUSED* ]] && PANEL+=(" $reason")
   PANEL+=($rule "${(@f)$(printf ' %-8s %-10s  %-7s  limit %s\n' \
     heat "$(bar $hf 4)" $hn $HEAT[THERMAL_MAX+1] \
@@ -212,7 +255,7 @@ panel() {
 # show [last]: prints new log lines (time only; routine status, safety and hook lines skipped) above the panel, then
 # redraws the panel in place, or removes it when last. -u1 writes through a throwaway stream: a dead terminal
 # leaves nothing buffered for later builtins to re-report.
-# ponytail: assumes the terminal is wider than the panel (about 45 columns); a narrower one leaves stale lines.
+# ponytail: assumes the terminal is wider than the panel (65 columns with the kitty); a narrower one leaves stale lines.
 show() {
   [[ -n $SHOW ]] || return 0
   local out= line
@@ -223,7 +266,11 @@ show() {
     out+=${line#* }$'\n'
   done
   PANEL_H=0
-  if [[ $SHOW == panel && -z $1 ]]; then out+=${(F)KITTY}$'\n'${(F)PANEL}$'\n'; PANEL_H=$(( $#KITTY + $#PANEL )); fi
+  if [[ $SHOW == panel && -z $1 ]]; then
+    kitty
+    (( $#KLINES )) && out+=${(F)KLINES}$'\n'
+    out+=${(F)PANEL}$'\n'; PANEL_H=$(( $#KLINES + $#PANEL ))
+  fi
   print -u1 -rn -- $out 2>/dev/null || true
 }
 
@@ -619,6 +666,7 @@ run() {
     { print -u2 'the eepy watchdog has not run in the last 2.5 minutes; run "eepy setup"'; return 1 }
   [[ -f $EEPY_LOG ]] && LOG_N=$(wc -l < $EEPY_LOG)
   [[ -t 1 ]] && SHOW=panel || SHOW=plain
+  [[ $SHOW == panel ]] && load_kitty
   local lim='no time limit' mode='Claude mode'
   (( LIMIT > 0 )) && lim="$(dur $LIMIT) limit"
   (( NOCLAUDE )) && mode='plain mode'
@@ -634,6 +682,7 @@ run() {
     show
     for (( i = 0; i < INTERVAL; i++ )); do
       sleep 1 & wait $!
+      show   # each second: new log lines appear promptly and the kitty's z's drift
       (( HOLDING || ACTIVE )) || [[ ! $EEPY_HOME/sessions -nt $EEPY_HOME/heartbeat ]] || break
     done
   done
