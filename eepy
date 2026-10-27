@@ -34,13 +34,17 @@ DAEMON_PLIST=/Library/LaunchDaemons/local.eepy.watchdog.plist
 HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT= LOCK_FD=
 # ---- Terminal display (SHOW is panel, plain, or empty before start; LOG_N counts log lines already shown) ----
 SHOW= LOG_N=0 PANEL_H=0 PANEL=()
-KITTY=(   # the eeping kitty, drawn above the panel
-  ' Z               _.--~~~~~~--._'
-  '   z    /\_/\ .-~              ~-.'
-  '     z ( -.- )                    \'
-  '        > ^ <      (               |'
-  '     ,-(_) (_)------`-.________.-~~~~~,'
-  '     `~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~`'
+KITTY=(   # the eeping kitty (the owner's drawing, converted to braille with chafa), drawn above the panel
+  ' ⠀⠀⠀⠀⠀⠀⠠⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀'
+  ' ⠀⠀⢸⡆⢀⡀⠀⠈⠳⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠣⠀⠀⢀⣀⡠⠤⠖⠒⠒⠒⠒⠤⢄⣀⡀⠀⠀⠀⠀⠀⠀'
+  ' ⠀⠀⠀⠀⠘⠃⠰⠂⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⣀⡠⡴⠋⠸⢤⡎⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠙⢦⡀⠀⠀⠀'
+  ' ⠈⠉⠉⠀⠒⠒⠒⠦⠤⠀⠀⠀⠀⠀⣠⠤⣴⠟⠁⠀⠀⠀⠀⠐⠓⣢⣞⠅⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠢⡀⠀'
+  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠠⣔⣒⠉⠀⠀⠁⠀⠀⠀⠀⠀⠀⠀⠈⠘⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⠄'
+  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⡖⡀⡄⠀⠀⠀⠀⠀⠀⠀⢀⡄⠀⢻⣦⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡼⠀'
+  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣩⢽⡏⠁⠀⠀⠀⠀⠀⠀⠉⠀⢾⠯⠔⠂⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠀'
+  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠻⡄⠀⠘⠚⠀⠀⠤⢆⣤⠎⠀⠀⠀⠀⠀⡖⠉⠢⣀⠀⠀⣀⡴⠀⠀⠀⢨⠆'
+  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠒⠒⠚⣩⣿⡿⠿⠿⠖⠻⠧⠦⠄⠐⠦⠤⠤⠣⣀⠀⠀⠉⠉⠁⠀⠀⡀⠠⠊⠀'
+  ' ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠑⠒⠤⠤⠐⠒⠋⠁⠀⠀⠀'
 )
 
 # ---- Readers: thin wrappers over macOS commands ----
