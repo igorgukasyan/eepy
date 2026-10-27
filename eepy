@@ -34,6 +34,7 @@ DAEMON_PLIST=/Library/LaunchDaemons/local.eepy.watchdog.plist
 HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT= LOCK_FD=
 # ---- Terminal display (SHOW is panel, plain, or empty before start; LOG_N counts log lines already shown) ----
 SHOW= LOG_N=0 PANEL_H=0 PANEL=()
+KITTY=('  /\_/\  zZ' ' ( -.- )' '  > ^ <')   # the eeping kitty, drawn above the panel
 
 # ---- Readers: thin wrappers over macOS commands ----
 read_lid() {
@@ -211,7 +212,7 @@ show() {
     out+=${line#* }$'\n'
   done
   PANEL_H=0
-  if [[ $SHOW == panel && -z $1 ]]; then out+=${(F)PANEL}$'\n'; PANEL_H=$#PANEL; fi
+  if [[ $SHOW == panel && -z $1 ]]; then out+=${(F)KITTY}$'\n'${(F)PANEL}$'\n'; PANEL_H=$(( $#KITTY + $#PANEL )); fi
   print -u1 -rn -- $out 2>/dev/null || true
 }
 

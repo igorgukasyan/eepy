@@ -311,7 +311,9 @@ t_panel() { loop_reset; lid No; NOW=1000; END=8200; FLOOR=20; sess working; chec
   is "$PANEL[6]" " temp     ███████░░░  30.3°C   limit 40°C" panel-temp
   is "$PANEL[8]" " a         ▶ working   0s" panel-session
   SHOW=panel LOG_N=$(wc -l < $EEPY_LOG); log "holding: x"; log "hook a none -> working (X)"; log "hold: y"
-  local o=$(show); is "${o%%$'\n'*}" "${$(tail -1 $EEPY_LOG)#* }" show-skips-routine-lines
+  show > $EEPY_HOME/o; local o=$(<$EEPY_HOME/o); is "${o%%$'\n'*}" "${$(tail -1 $EEPY_LOG)#* }" show-skips-routine-lines
+  [[ $o == *$'\n ( -.- )\n'* ]] || is missing drawn kitty-drawn
+  is $PANEL_H $(( 3 + $#PANEL )) height-counts-kitty
   [[ $o == *"$PANEL[1]"* ]] || is missing drawn show-draws-panel
   LOG_N=$(wc -l < $EEPY_LOG) PANEL_H=9; is "$(show last)" $'\e[9A\e[J' show-last-erases-panel
   OS_OUT='2 0'; NOW=1030; check_once; is "$PANEL[3]" " TRIGGER heat: thermal pressure 2 (limit 2)" panel-paused-reason }
