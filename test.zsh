@@ -107,7 +107,6 @@ t_args() {
 t_log() {
   log hello > $EEPY_HOME/out; is "$(<$EEPY_HOME/out)" "" file-only-by-default
   grep -q '^[0-9-]\{10\} [0-9:]\{8\} hello$' $EEPY_LOG || is missing present log-format
-  LOG_TTY=1; is "$(log hi)" "$(tail -1 $EEPY_LOG)" tty-copy
 }
 t_proc_start() {
   PS_LSTART=(4000 'Tue Oct 20 13:33:01 2026    ' 4001 'Tue  Oct 20 13:33:01 2026')
@@ -304,6 +303,18 @@ t_not_holding() { loop_reset; lid No; NOW=1000; OS_OUT='2 0'
   check_once; is "$(tail -1 $EEPY_LOG | cut -d' ' -f3-)" "not holding: attended, active sessions 0" no-reason-when-not-wanted
   sess working; check_once; NOW=1030; sess working; check_once; is $HOLDING 0 tripped-not-held
   is "$(grep -cF 'not holding: attended, active sessions 1; TRIGGER heat: thermal pressure 2 (limit 2)' $EEPY_LOG)" 1 reason-logged-once }
+t_panel() { loop_reset; lid No; NOW=1000; END=8200; FLOOR=20; sess working; check_once
+  is "$PANEL[1]" " eepy · Claude mode · 2h left" panel-header
+  is "$PANEL[2]" $' \e[32m● AWAKE\e[0m · lid open or monitor · on battery' panel-state
+  is "$PANEL[4]" " heat     █░░░        nominal  limit serious" panel-heat
+  is "$PANEL[5]" " battery  ██████░░░░  57%      limit 20%" panel-battery
+  is "$PANEL[6]" " temp     ███████░░░  30.3°C   limit 40°C" panel-temp
+  is "$PANEL[8]" " a         ▶ working   0s" panel-session
+  SHOW=panel LOG_N=$(wc -l < $EEPY_LOG); log "holding: x"; log "hook a none -> working (X)"; log "hold: y"
+  local o=$(show); is "${o%%$'\n'*}" "${$(tail -1 $EEPY_LOG)#* }" show-skips-routine-lines
+  [[ $o == *"$PANEL[1]"* ]] || is missing drawn show-draws-panel
+  LOG_N=$(wc -l < $EEPY_LOG) PANEL_H=9; is "$(show last)" $'\e[9A\e[J' show-last-erases-panel
+  OS_OUT='2 0'; NOW=1030; check_once; is "$PANEL[3]" " TRIGGER heat: thermal pressure 2 (limit 2)" panel-paused-reason }
 t_noclaude()     { loop_reset; lid No; NOCLAUDE=1; NOW=1000; check_once; is $HOLDING 1 uc12-holds-without-sessions }
 t_time_limit()   { loop_reset; lid Yes; NOCLAUDE=1; HOLDING=1; held Yes; END=2000; NOW=2000
   check_once; is $? 1 uc11-stops; grep -q 'TRIGGER time limit reached' $EEPY_LOG || is missing logged uc11-logged }

@@ -32,6 +32,8 @@ DAEMON_PLIST=/Library/LaunchDaemons/local.eepy.watchdog.plist
 
 # ---- Loop state (epoch seconds; END=0 means no limit; LOCK_FD is set once this eepy holds the lock) ----
 HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT= LOCK_FD=
+# ---- Terminal display (SHOW is panel, plain, or empty before start; LOG_N counts log lines already shown) ----
+SHOW= LOG_N=0 PANEL_H=0 PANEL=()
 
 # ---- Readers: thin wrappers over macOS commands ----
 read_lid() {
@@ -155,9 +157,62 @@ log() {
   local line="$(date '+%F %T') $*"
   mkdir -p ${EEPY_LOG:h}
   print -r -- "$line" >> $EEPY_LOG
-  # -u1 writes through a throwaway stream: a dead terminal leaves nothing buffered for later builtins to re-report.
-  (( ${LOG_TTY:-0} == 1 )) && { print -u1 -r -- "$line" 2>/dev/null || true; }
   return 0
+}
+
+# bar <filled> <width>: a gauge such as ███░░
+bar() {
+  local f=$(( $1 < 0 ? 0 : $1 > $2 ? $2 : $1 ))
+  print -rn -- ${(l:f::█:)}${(l:$2-f::░:)}
+}
+
+# panel: builds PANEL, the terminal status box. Called at the end of check_once and reads its locals.
+panel() {
+  local mode='Claude mode' left='no time limit' state='○ RELEASED' lid='lid closed' rule=" ${(l:41::─:)}" e hf=0 bf=0 tf=0
+  local -a w
+  local -A icon=(working ▶ waiting … finished ✓)
+  (( NOCLAUDE )) && mode='plain mode'
+  (( END )) && left="$(dur $(( END - t ))) left"
+  (( HOLDING )) && state=$'\e[32m● AWAKE\e[0m'
+  (( !HOLDING && want && tripped )) && state=$'\e[33m● PAUSED\e[0m'
+  (( attended )) && lid='lid open or monitor'
+  [[ $th == <0-3> ]] && hf=$(( th + 1 ))
+  [[ $pct == <-> ]] && bf=$(( (pct + 5) / 10 ))
+  [[ $temp == <-> ]] && tf=$(( temp * 10 / TEMP_MAX ))
+  PANEL=(" eepy · $mode · $left" " $state · $lid · on $src")
+  [[ $state == *PAUSED* ]] && PANEL+=(" $reason")
+  PANEL+=($rule "${(@f)$(printf ' %-8s %-10s  %-7s  limit %s\n' \
+    heat "$(bar $hf 4)" $hn $HEAT[THERMAL_MAX+1] \
+    battery "$(bar $bf 10)" $pct% $FLOOR% \
+    temp "$(bar $tf 10)" ${tc}°C $(( TEMP_MAX / 100 ))°C)}")
+  (( NOCLAUDE )) && return 0
+  PANEL+=($rule)
+  for e in ${(s:, :)REPORT}; do
+    w=(${=e})
+    if [[ $e == +* ]]; then PANEL+=("           $e")
+    else PANEL+=("$(printf ' %-9s %s %-9s %s' $w[1] $icon[$w[2]] $w[2] $w[3])")
+    fi
+  done
+  [[ -n $REPORT ]] || PANEL+=(' no Claude sessions')
+  return 0
+}
+
+# show [last]: prints new log lines (time only; routine status, safety and hook lines skipped) above the panel, then
+# redraws the panel in place, or removes it when last. -u1 writes through a throwaway stream: a dead terminal
+# leaves nothing buffered for later builtins to re-report.
+# ponytail: assumes the terminal is wider than the panel (about 45 columns); a narrower one leaves stale lines.
+show() {
+  [[ -n $SHOW ]] || return 0
+  local out= line
+  (( PANEL_H )) && out=$'\e['$PANEL_H$'A\e[J'
+  for line in ${(f)"$(tail -n +$(( LOG_N + 1 )) $EEPY_LOG 2>/dev/null)"}; do
+    (( LOG_N++ ))
+    [[ $SHOW == panel && ${line#* * } == (((not\ |)holding|safety):*|hook\ *) ]] && continue
+    out+=${line#* }$'\n'
+  done
+  PANEL_H=0
+  if [[ $SHOW == panel && -z $1 ]]; then out+=${(F)PANEL}$'\n'; PANEL_H=$#PANEL; fi
+  print -u1 -rn -- $out 2>/dev/null || true
 }
 
 # Prints the process start time with spaces squeezed and trimmed, or nothing.
@@ -480,7 +535,7 @@ uninstall() {
 
 # One pass of the spec's Behaviour. Returns 0 to carry on, 1 once eepy has stopped and released.
 check_once() {
-  local t prev elapsed gap=0 want=0 timeup=0 tripped=0 attended th lpm temp pct src reason tc s seen
+  local t prev elapsed gap=0 want=0 timeup=0 tripped=0 attended th lpm temp pct src reason tc s seen hn
   t=$(now)
   touch $EEPY_HOME/heartbeat
   prev=$HOLDING; HOLDING=$(read_held)
@@ -524,16 +579,17 @@ check_once() {
       return 1 ;;
   esac
   (( attended )) && seen=attended || seen=unattended
+  tc='?'; [[ $temp == <-> ]] && tc=$((temp / 100)).$((temp % 100 / 10))
+  hn='?'; [[ $th == <0-3> ]] && hn=$HEAT[th+1]
   if (( HOLDING )); then
-    tc='?'; [[ $temp == <-> ]] && tc=$((temp / 100)).$((temp % 100 / 10))
-    [[ $th == <0-3> ]] && th=$HEAT[th+1]
-    log "holding: $seen, heat $th, battery $pct% at ${tc}°C, on $src, low power ${${lpm/1/on}/0/off}; sessions: ${REPORT:-none}"
+    log "holding: $seen, heat $hn, battery $pct% at ${tc}°C, on $src, low power ${${lpm/1/on}/0/off}; sessions: ${REPORT:-none}"
   else
     s="not holding: $seen, active sessions $ACTIVE"
     (( want && tripped )) && s+="; $reason"
     [[ $s != $LAST_SUMMARY ]] && log $s
     LAST_SUMMARY=$s
   fi
+  panel
   return 0
 }
 
@@ -549,7 +605,8 @@ run() {
   local t=$(now) mt=$(stat -f %m $EEPY_HOME/watchdog 2>/dev/null)   # the watchdog stamps this file every minute
   [[ $mt == <-> ]] && (( t - mt >= 0 && t - mt <= 150 )) ||
     { print -u2 'the eepy watchdog has not run in the last 2.5 minutes; run "eepy setup"'; return 1 }
-  LOG_TTY=1
+  [[ -f $EEPY_LOG ]] && LOG_N=$(wc -l < $EEPY_LOG)
+  [[ -t 1 ]] && SHOW=panel || SHOW=plain
   local lim='no time limit' mode='Claude mode'
   (( LIMIT > 0 )) && lim="$(dur $LIMIT) limit"
   (( NOCLAUDE )) && mode='plain mode'
@@ -562,11 +619,13 @@ run() {
   (( HOLDING )) && log "FAILURE sleep was already disabled at start; taking it over"
   local i
   while check_once; do   # 1 s sleeps: a session that starts while idle is checked at once, before the lid can close
+    show
     for (( i = 0; i < INTERVAL; i++ )); do
       sleep 1 & wait $!
       (( HOLDING || ACTIVE )) || [[ ! $EEPY_HOME/sessions -nt $EEPY_HOME/heartbeat ]] || break
     done
   done
+  show last
   return 0
 }
 
@@ -575,6 +634,7 @@ on_signal() {
   trap '' INT TERM HUP QUIT
   release
   log "stopped by signal"
+  show last
   kill %sleep 2>/dev/null   # zsh defers exit inside a function, and `wait` would sit out the whole sleep
   exit 0
 }
