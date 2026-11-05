@@ -35,7 +35,11 @@ define_stubs() {
       *IOPMrootDomain*) print -r -- "$ROOT_OUT" ;;
     esac
   }
-  pmset() { [[ "$*" == *"-g batt"* ]] && print -r -- "$PMSET_BATT"; return 0 }
+  pmset() {
+    [[ "$*" == *"-g batt"* ]] && print -r -- "$PMSET_BATT"
+    [[ $1 == displaysleepnow ]] && CALLS+=("pmset $*")
+    return 0
+  }
   osascript() { print -r -- "$OS_OUT" }
   ps() {
     local f=${2%=} pid=$4
@@ -298,6 +302,22 @@ t_all_day() {   # uc8, uc10, uc1, uc26
   is "${CALLS[-1]}" "-n /usr/bin/pmset sleepnow" sleeps-when-unattended
   NOW=1240; sess working; check_once; is $HOLDING 0 uc26-dark-wake-never-arms
   NOW=1270; lid No; check_once; is $HOLDING 1 lid-open-arms-again
+}
+t_lock() {   # holding stops a closed lid from sleeping the Mac, so it would never lock
+  loop_reset; lid No; SEEN=
+  NOW=1000; sess working; check_once; is $HOLDING 1 holds
+  CALLS=(); lid Yes; watch_lid; is "${CALLS[*]}" "pmset displaysleepnow" lid-closed-locks-within-a-second
+  grep -q 'lock: lid closed, unattended, while holding' $EEPY_LOG || is missing logged lock-logged
+  CALLS=(); watch_lid; NOW=1030; check_once; is "${CALLS[*]}" "" locks-once
+  CALLS=(); lid No; watch_lid; lid Yes; watch_lid; is "${CALLS[*]}" "pmset displaysleepnow" reopen-and-close-locks-again
+  CALLS=(); lid No; watch_lid; DISPLAYS=1; lid Yes; watch_lid; is "${CALLS[*]}" "pmset displaysleepnow" lid-closed-with-monitor-locks
+  CALLS=(); NOW=1060; check_once; is "${CALLS[*]}" "" monitor-locks-once
+  CALLS=(); DISPLAYS=0; NOW=1090; check_once; is "${CALLS[*]}" "pmset displaysleepnow" monitor-unplugged-locks-at-next-check
+  loop_reset; lid Yes; DISPLAYS=1; NOCLAUDE=1; SEEN=
+  NOW=1000; check_once; is "$HOLDING ${CALLS[*]}" "1 -n /usr/bin/pmset -a disablesleep 1" start-lid-closed-at-monitor-no-lock
+  loop_reset; lid No; SEEN=
+  NOW=1000; check_once; is $HOLDING 0 not-holding
+  CALLS=(); lid Yes; watch_lid; NOW=1030; check_once; is "${CALLS[*]}" "" not-holding-macos-sleeps-and-locks-itself
 }
 t_not_holding() { loop_reset; lid No; NOW=1000; OS_OUT='2 0'
   check_once; is "$(tail -1 $EEPY_LOG | cut -d' ' -f3-)" "not holding: attended, active sessions 0" no-reason-when-not-wanted

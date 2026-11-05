@@ -37,7 +37,7 @@ typeset -ga THOUGHTS=(
   plain    "napping with one ear up"
   plain    "ready when you are"
   plain    "on watch, eyes half shut"
-  plain    "you are a meatbag, i am a cat"
+  plain    "you're a meatbag, i'm a cat"
   plain    "i own you"
   plain    "keep working"
   hot      "AW AW HOT HOT, cooling off"
@@ -75,6 +75,8 @@ DAEMON_PLIST=/Library/LaunchDaemons/local.eepy.watchdog.plist
 
 # ---- Loop state (epoch seconds; END=0 means no limit; LOCK_FD is set once this eepy holds the lock) ----
 HOLDING=0 LAST_CHECK=0 LAST_ACTIVE=0 END=0 STOPPING= LAST_SUMMARY= ACTIVE=0 REPORT= LOCK_FD=
+# ---- Screen lock: SEEN is "<lid> <attended>" as last seen by lock_check, empty before the first check ----
+SEEN=
 # ---- Terminal display (SHOW is panel, plain, or empty before start; LOG_N counts log lines already shown) ----
 SHOW= LOG_N=0 PANEL_H=0 PANEL=() MOOD=idle THOUGHT= THOUGHT_MOOD=   # MOOD: the state the kitty thinks about
 # The kitty (kitty.txt, made by art/gen.py): KITTY holds every animation frame, KITTY_H lines each. The thought goes
@@ -468,6 +470,26 @@ release() {
   return 1
 }
 
+# Holding stops a closed lid from sleeping the Mac, so macOS never locks it. lock_check <attended> sleeps the display,
+# which locks the screen (System Settings > Lock Screen decides how soon), when a holding Mac's lid closes, monitor or
+# not, and when it loses its last monitor with the lid closed.
+lock_check() {
+  local lid=$(read_lid) w=unattended
+  (( $1 )) && w=attended
+  if (( HOLDING )) && [[ -n $SEEN && "$lid $1" != $SEEN && $lid != open ]]; then
+    if pmset displaysleepnow 2>/dev/null; then log "lock: lid $lid, $w, while holding; display put to sleep"
+    else log "FAILURE lock: pmset displaysleepnow failed"
+    fi
+  fi
+  SEEN="$lid $1"
+}
+
+# Run each second while holding: a lid change is acted on at once instead of at the next check.
+watch_lid() {
+  (( HOLDING )) && [[ $(read_lid) != ${SEEN%% *} ]] && lock_check $(read_attended)
+  return 0
+}
+
 # Run every minute by the system LaunchDaemon (as the owner): releases when sleep is disabled and the heartbeat is stale or missing.
 # Its first act stamps $EEPY_HOME/watchdog, which run checks to know the watchdog really runs.
 watchdog() {
@@ -679,6 +701,7 @@ check_once() {
       (( HOLDING )) && return 0
       return 1 ;;
   esac
+  lock_check $attended
   (( attended )) && seen=attended || seen=unattended
   tc='?'; [[ $temp == <-> ]] && tc=$((temp / 100)).$((temp % 100 / 10))
   hn='?'; [[ $th == <0-3> ]] && hn=$HEAT[th+1]
@@ -724,6 +747,7 @@ run() {
     show
     for (( i = 0; i < INTERVAL; i++ )); do
       sleep 1 & wait $!
+      watch_lid
       show   # each second: new log lines appear promptly and the kitty's z's drift
       (( HOLDING || ACTIVE )) || [[ ! $EEPY_HOME/sessions -nt $EEPY_HOME/heartbeat ]] || break
     done

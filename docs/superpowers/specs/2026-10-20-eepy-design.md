@@ -134,6 +134,8 @@ Every check (interval 30 s, slept with `sleep & wait`), eepy:
 
 All release paths (stop, step 7, signal traps, watchdog) use one release routine: `sudo -n /usr/bin/pmset -a disablesleep 0`, read back through `ioreg` (anything other than a literal `No` counts as still held), then, if unattended, `sudo -n /usr/bin/pmset sleepnow` whatever the read-back said.
 
+**Locking.** Holding stops a closed lid from sleeping the Mac, so macOS never locks it. When a holding Mac's lid closes, with or without an external monitor, eepy runs `pmset displaysleepnow` (no sudo), which locks the screen as System Settings > Lock Screen says. While holding, eepy also reads the lid every second, so closing the lid locks within about a second. Unplugging the last monitor with the lid already closed locks at the next check.
+
 The real `SleepDisabled` is the truth about holding. Every check reads it first and takes it as eepy's holding state in both directions, logging FAILURE when it differs from what eepy expected. At start eepy adopts it the same way. So a failed release is retried on the next check, and a hold left behind by a crash or another tool is cleaned up. A stop whose release fails does not exit: eepy retries the release every check and exits once it succeeds.
 
 On Ctrl-C, terminal close (HUP) or TERM: ignore further signals, release, then log, then exit. The traps are the first thing eepy sets up, before any output. Printing to a closed terminal must not kill eepy before it has released.
@@ -342,6 +344,8 @@ Check these during the build:
 11. External display detection. The `IOMobileFramebufferShim` `external` flag is not usable: it reports 2 with no monitor attached. `system_profiler SPDisplaysDataType` takes about 0.2 s.
 9. The battery `Temperature` unit (assumed hundredths of °C).
    - Result: deferred to the owner session (Task 11).
+12. `pmset displaysleepnow` locks the screen with the lid closed while `disablesleep` is 1 (this Mac's lock delay reads "immediate").
+   - Result: confirmed by the owner on 2026-11-05: closing the lid while holding showed the lock screen on reopening.
 
 Pre-flight results (Task 1):
 
